@@ -143,6 +143,7 @@ class BaseGitSyncService(IGitSyncProvider):
             }
 
         # Push commit to origin main
+        auth_token = None
         if isinstance(self.repo, CloudRepository):
             auth_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN")
             if not auth_token:
@@ -150,10 +151,25 @@ class BaseGitSyncService(IGitSyncProvider):
                     from backend.services.github_auth import GitHubTokenManager
                     auth_token = GitHubTokenManager().get_installation_access_token()
                 except Exception:
-                    pass
+                    auth_token = None
+
+            # If we have a non-mock token, update the remote URL to embed it so git can push non-interactively.
             if auth_token and not str(auth_token).startswith("ghs_mock"):
                 auth_url = f"https://x-access-token:{auth_token}@github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
                 self._run_git(["remote", "set-url", "origin", auth_url], check=False)
+            else:
+                # If no usable token is available, surface a clearer error before attempting `git push`.
+                remote_url = self._run_git(["config", "--get", "remote.origin.url"], check=False) or ""
+                if "github.com" in remote_url and "@" not in remote_url:
+                    raise GitSyncError(
+                        message=(
+                            "No GitHub authentication available for non-interactive push. "
+                            "Set the `GITHUB_TOKEN` or `AGENT_AUTH_TOKEN` environment variable, "
+                            "or configure a GitHub App via GITHUB_APP_ID/GITHUB_APP_INSTALLATION_ID/GITHUB_APP_PRIVATE_KEY."
+                        ),
+                        stage="git_push_auth",
+                        exit_code=128,
+                    )
 
         try:
             push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH], timeout=35)

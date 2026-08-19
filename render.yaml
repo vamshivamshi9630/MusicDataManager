@@ -26,3 +26,7 @@ services:
         sync: false
       - key: GITHUB_APP_PRIVATE_KEY
         sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: AGENT_AUTH_TOKEN
+        sync: false

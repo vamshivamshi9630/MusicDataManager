@@ -571,3 +571,42 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
         "git_summary": git_result,
         "tunezy_ready": True
     }
+
+
+@router.get("/sync/diagnostics")
+def sync_diagnostics(_auth=Depends(check_token)):
+    """Return diagnostic info useful for debugging cloud git push and auth issues."""
+    try:
+        # Use cloud repo context when in cloud mode, else local repo
+        if is_cloud_mode():
+            rc = RepositoryContext()  # lightweight; don't perform repo operations
+            git_svc = GitSyncService(CloudRepository(job_id="diag_check"))
+        else:
+            rc = get_repo_context()
+            git_svc = get_git_service(rc)
+
+        git_status = git_svc.get_git_status()
+        remote = git_status.get("remote", "") or ""
+        token_env = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN") or ""
+        token_present = bool(token_env)
+        token_is_mock = str(token_env).startswith("ghs_mock") if token_present else False
+
+        push_possible = True
+        message = "Push appears possible."
+        if "github.com" in remote and not token_present and is_cloud_mode():
+            push_possible = False
+            message = (
+                "Remote is GitHub and no GITHUB_TOKEN/AGENT_AUTH_TOKEN detected. "
+                "Provide a token or configure a GitHub App as described in docs/GitHub-Deploy.md"
+            )
+
+        return {
+            "git": git_status,
+            "remote": remote,
+            "token_present": token_present,
+            "token_is_mock": token_is_mock,
+            "push_possible": push_possible,
+            "message": message
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e)})

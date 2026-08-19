@@ -152,3 +152,15 @@ def read_root():
 if __name__ == "__main__":
     print(f"Starting MusicData Manager on http://{settings.HOST}:{settings.API_PORT}")
     uvicorn.run("backend.main:app", host=settings.HOST, port=settings.API_PORT, reload=True)
+
+
+# Startup checks
+@app.on_event("startup")
+def startup_checks():
+    cloud_mode = os.environ.get("CLOUD_MODE", "").strip().lower() in ("1", "true")
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN")
+    if cloud_mode and not token:
+        logger.warning("Running in CLOUD_MODE but no GITHUB_TOKEN or AGENT_AUTH_TOKEN detected. \n"
+                       "Cloud sync push operations will fail until a token or GitHub App is configured. \n"
+                       "See docs/GitHub-Deploy.md for setup instructions.")
+        print("[WARN] CLOUD_MODE active but no GITHUB_TOKEN or AGENT_AUTH_TOKEN set. See docs/GitHub-Deploy.md")

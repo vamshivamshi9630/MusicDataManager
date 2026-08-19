@@ -24,7 +24,10 @@ class GitHubTokenManager:
         if self._cached_token and (self._expires_at - now) > 300:
             return self._cached_token
 
-        if self.test_mode or not (settings.GITHUB_APP_ID and settings.GITHUB_APP_INSTALLATION_ID):
+        # Use getattr to avoid AttributeError if settings doesn't define these attributes.
+        app_id = getattr(settings, "GITHUB_APP_ID", None)
+        installation_id = getattr(settings, "GITHUB_APP_INSTALLATION_ID", None)
+        if self.test_mode or not (app_id and installation_id):
             self._cached_token = "ghs_mock_installation_token_for_phase_c_testing_12345"
             self._expires_at = now + 3600
             return self._cached_token
@@ -59,7 +62,7 @@ class GitHubTokenManager:
 
     def _generate_app_jwt(self) -> str:
         # Standard placeholder for JWT generation using GITHUB_APP_PRIVATE_KEY
-        if not settings.GITHUB_APP_PRIVATE_KEY:
+        if not getattr(settings, "GITHUB_APP_PRIVATE_KEY", None):
             raise GitHubAuthError("Missing GITHUB_APP_PRIVATE_KEY configuration.")
         return f"app_jwt_for_id_{settings.GITHUB_APP_ID}"
 
