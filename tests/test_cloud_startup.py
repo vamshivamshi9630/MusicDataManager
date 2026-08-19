@@ -49,15 +49,50 @@ class TestCloudStartupWithoutLocalRepo(unittest.TestCase):
         self.assertTrue("github_repository" in data)
         self.assertTrue("git" in data)
 
-    def test_02_local_endpoint_rejection_in_cloud_mode(self):
-        """Test that local agent endpoints gracefully reject calls in Cloud Mode with informative 400."""
+    def test_02_cloud_stats_endpoint(self):
+        """Test GET /api/stats returns stable schema with mode=CLOUD."""
+        from backend.main import app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        res = client.get("/api/stats")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertEqual(data["mode"], "CLOUD")
+        self.assertEqual(data["zero_byte_shield"], "Active")
+        self.assertIn("albums", data)
+        self.assertIn("songs", data)
+        self.assertIn("png_artwork", data)
+        self.assertIsInstance(data["albums"], int)
+        self.assertIsInstance(data["songs"], int)
+
+    def test_03_cloud_albums_list_endpoint(self):
+        """Test GET /api/albums returns dynamic catalog list in Cloud Mode."""
         from backend.main import app
         from fastapi.testclient import TestClient
 
         client = TestClient(app)
         res = client.get("/api/albums")
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("Local agent repository operations are disabled in Cloud Mode", res.json()["detail"])
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertIn("total_albums", data)
+        self.assertIn("albums", data)
+        self.assertIsInstance(data["albums"], list)
+
+    def test_04_cloud_directors_autocomplete(self):
+        """Test GET /api/directors/autocomplete in Cloud Mode."""
+        from backend.main import app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        res = client.get("/api/directors/autocomplete?q=Rahman")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertIn("suggestions", data)
+        self.assertIsInstance(data["suggestions"], list)
 
 if __name__ == "__main__":
     unittest.main()

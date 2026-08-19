@@ -221,34 +221,37 @@
 
         async function refreshRepoStatus() {
             try {
-                const res = await fetch(`${API_BASE}/health`);
-                const data = await res.json();
-                document.getElementById('repo-branch-info').innerText = `${data.git.branch} (${data.git.head})`;
+                const healthRes = await fetch(`${API_BASE}/health`);
+                if (healthRes.ok) {
+                    const healthData = await healthRes.json();
+                    const modeLabel = healthData.mode || "LOCAL";
+                    const branchStr = healthData.git ? healthData.git.branch : "main";
+                    document.getElementById('repo-branch-info').innerText = `${modeLabel} MODE • ${branchStr}`;
+                }
                 
-                const diagRes = await fetch(`${API_BASE}/albums`);
-                const diagData = await diagRes.json();
-                document.getElementById('stat-albums-count').innerText = diagData.total_albums;
-                state.albums = diagData.albums;
+                const statsRes = await fetch(`${API_BASE}/stats`);
+                if (statsRes.ok) {
+                    const statsData = await statsRes.json();
+                    document.getElementById('stat-albums-count').innerText = statsData.albums !== undefined ? statsData.albums : '...';
+                    document.getElementById('stat-songs-count').innerText = statsData.songs !== undefined ? statsData.songs : '...';
+                    document.getElementById('stat-png-count').innerText = statsData.png_artwork !== undefined ? statsData.png_artwork : '...';
+                    document.getElementById('stat-shield-count').innerText = statsData.zero_byte_shield || "Active";
+                }
             } catch (e) {
-                console.error(e);
+                console.error("Failed to refresh repo status:", e);
             }
         }
 
         async function loadAlbumsCatalog() {
             try {
                 const res = await fetch(`${API_BASE}/albums`);
-                const data = await res.json();
-                state.albums = data.albums;
-                renderBrowseGrid(data.albums);
-                document.getElementById('stat-albums-count').innerText = data.total_albums;
-                
-                let totalSongs = data.albums.reduce((acc, a) => acc + a.songCount, 0);
-                document.getElementById('stat-songs-count').innerText = totalSongs;
-                
-                let pngCount = data.albums.filter(a => a.hasArtwork).length;
-                document.getElementById('stat-png-count').innerText = pngCount;
+                if (res.ok) {
+                    const data = await res.json();
+                    state.albums = data.albums || [];
+                    renderBrowseGrid(state.albums);
+                }
             } catch (e) {
-                console.error(e);
+                console.error("Failed to load albums catalog:", e);
             }
         }
 

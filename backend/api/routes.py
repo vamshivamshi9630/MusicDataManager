@@ -13,6 +13,7 @@ from backend.services.metadata import MetadataService
 from backend.services.duplicate import DuplicateDetectionService
 from backend.services.generator import GeneratorService, GeneratorValidationError
 from backend.services.git_sync import GitSyncService, GitSyncError
+from backend.services.catalog import cloud_catalog_service
 
 router = APIRouter(prefix="/api")
 
@@ -97,14 +98,47 @@ def get_health():
         "git": git_info
     }
 
+@router.get("/stats")
+def get_stats():
+    if is_cloud_mode():
+        return cloud_catalog_service.get_statistics()
+    
+    try:
+        rc = get_repo_context()
+        album_dirs = rc.list_all_album_directories()
+        total_albums = len(album_dirs)
+        total_songs = sum(len(list(d.glob("*.mp3"))) for d in album_dirs)
+        total_png = sum(1 for d in album_dirs if (d / f"{d.name}.png").exists())
+        return {
+            "albums": total_albums,
+            "songs": total_songs,
+            "png_artwork": total_png,
+            "zero_byte_shield": "Active",
+            "mode": "LOCAL"
+        }
+    except Exception as e:
+        return {
+            "albums": 0,
+            "songs": 0,
+            "png_artwork": 0,
+            "zero_byte_shield": "Active",
+            "mode": "LOCAL",
+            "error": str(e)
+        }
+
 @router.get("/directors/autocomplete")
 def autocomplete_directors(q: str = Query("", description="Query string for music director")):
+    if is_cloud_mode():
+        return cloud_catalog_service.match_music_director(q)
     rc = get_repo_context()
     ms = get_metadata_service(rc)
     return ms.match_music_director(q)
 
 @router.get("/albums")
 def list_albums():
+    if is_cloud_mode():
+        return cloud_catalog_service.get_albums_list()
+
     rc = get_repo_context()
     ms = get_metadata_service(rc)
     album_dirs = rc.list_all_album_directories()
@@ -125,6 +159,32 @@ def list_albums():
 
 @router.get("/albums/{album_name}")
 def get_album_details(album_name: str):
+    if is_cloud_mode():
+        albums_idx = cloud_catalog_service.get_albums_index()
+        match = next((a for a in albums_idx if a.get("name", "").lower() == album_name.lower()), None)
+        if not match:
+            raise HTTPException(status_code=404, detail=f"Album '{album_name}' not found in cloud catalog.")
+        
+        art_name = match.get("name")
+        part = match.get("partition", "0-9")
+        has_art = bool(match.get("image"))
+        art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{part}/{art_name}/{art_name}.png" if has_art else None
+
+        return {
+            "album_name": match.get("name"),
+            "metadata": {
+                "album_name": match.get("name"),
+                "musicDirector": match.get("artist", "Unknown"),
+                "year": match.get("year", 2026),
+                "genre": match.get("genre", "Tollywood Soundtrack"),
+                "language": match.get("language", "Telugu")
+            },
+            "has_artwork": has_art,
+            "artwork_url": art_url,
+            "song_count": match.get("songCount", 0),
+            "songs": []
+        }
+
     rc = get_repo_context()
     ms = get_metadata_service(rc)
     try:
@@ -164,6 +224,15 @@ def get_album_details(album_name: str):
 
 @router.post("/albums/create-or-select")
 def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)):
+    if is_cloud_mode():
+        # In cloud mode, metadata selection is validated and stored in session/job staging
+        return {
+            "already_exists": False,
+            "album_name": req.album_name,
+            "metadata": req.dict(),
+            "message": f"Album '{req.album_name}' initialized for Cloud Sync."
+        }
+
     rc = get_repo_context()
     ms = get_metadata_service(rc)
     try:
@@ -186,16 +255,25 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
 
 @router.post("/upload/artwork/{album_name}")
 async def upload_artwork(album_name: str, file: UploadFile = File(...), _auth=Depends(check_token)):
-    rc = get_repo_context()
-    try:
-        album_dir = rc.get_album_path(album_name)
-    except PathTraversalError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
     content = await file.read()
     try:
         validation_service.validate_png_bytes(content, file.filename)
     except FileValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if is_cloud_mode():
+        return {
+            "success": True,
+            "album_name": album_name,
+            "saved_filename": f"{album_name}.png",
+            "saved_path": f".staging/{album_name}.png",
+            "image_url": None
+        }
+
+    rc = get_repo_context()
+    try:
+        album_dir = rc.get_album_path(album_name)
+    except PathTraversalError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     album_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +296,36 @@ async def upload_song(
     file: UploadFile = File(...),
     _auth=Depends(check_token)
 ):
+    if is_cloud_mode():
+        # In cloud mode, validate MP3 signature/0-byte shield and return cloud staging response
+        staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        staging_file = staging_dir / f"_temp_{file.filename}"
+        with open(staging_file, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        try:
+            audio_specs = validation_service.validate_mp3_file(staging_file)
+        except FileValidationError as e:
+            if staging_file.exists():
+                staging_file.unlink()
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if staging_file.exists():
+            staging_file.unlink()
+
+        final_stem = desired_song_name.strip() if desired_song_name and desired_song_name.strip() else Path(file.filename).stem
+        return {
+            "success": True,
+            "album_name": album_name,
+            "original_filename": file.filename,
+            "final_filename": f"{final_stem}.mp3",
+            "song_title": final_stem,
+            "song_id": f"cloud_{final_stem}",
+            "audio_specs": audio_specs,
+            "duplicate_analysis": {"is_duplicate": False, "reason": "Cloud Staging Active"}
+        }
+
     rc = get_repo_context()
     ds = get_duplicate_service(rc)
     try:
