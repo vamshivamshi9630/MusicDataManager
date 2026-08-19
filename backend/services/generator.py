@@ -205,6 +205,19 @@ def scan_all_albums() -> List[Dict]:
         except Exception:
             pass
 
+    def _ensure_generate_metadata_cache_miss_support(self):
+        v2_script = self.repo.root / "generate_metadata.py"
+        if not v2_script.exists():
+            return
+        try:
+            content = v2_script.read_text(encoding="utf-8")
+            target = "is_modified = (album_name, mp3_file.name) in modified_songs_set or not use_cache"
+            replacement = "is_modified = album_cache is None or (album_name, mp3_file.name) in modified_songs_set or not use_cache"
+            if target in content:
+                v2_script.write_text(content.replace(target, replacement), encoding="utf-8")
+        except Exception:
+            pass
+
     def run_generator_pipeline(self) -> Dict[str, Any]:
         stages: List[Dict[str, Any]] = []
         before_metrics = self.get_current_metrics()
@@ -212,6 +225,7 @@ def scan_all_albums() -> List[Dict]:
         print(f"[GENERATOR PIPELINE] Workspace root: {self.repo.root}")
 
         self._ensure_generator2_base_path_support()
+        self._ensure_generate_metadata_cache_miss_support()
 
         if isinstance(self.repo, CloudRepository):
             self._ensure_sparse_scanner_support()

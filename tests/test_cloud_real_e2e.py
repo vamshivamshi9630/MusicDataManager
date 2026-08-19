@@ -23,10 +23,10 @@ class TestCloudRealEndToEndPipeline(unittest.TestCase):
         cls.client = TestClient(app)
         
         cls.source_dir = Path(r"C:\Users\vamshi\Downloads\New folder")
-        cls.album_name = "Lovers Day"
-        cls.music_director = "Unknown"
-        cls.year = 2019
-        cls.release_date = "2019-02-14"
+        cls.album_name = "RRR"
+        cls.music_director = "M. M. Keeravani"
+        cls.year = 2022
+        cls.release_date = "2022-05-25"
 
         print(f"\n[CLOUD REAL E2E TEST] Executing Cloud Sync Pipeline for '{cls.album_name}'...")
 
