@@ -6,6 +6,11 @@ import tempfile
 import unittest
 import subprocess
 from pathlib import Path
+
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
 from fastapi.testclient import TestClient
 
 from backend.main import app
