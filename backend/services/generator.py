@@ -187,11 +187,31 @@ def scan_all_albums() -> List[Dict]:
         except Exception:
             pass
 
+    def _ensure_generator2_base_path_support(self):
+        gen2_file = self.repo.root / "generate_or_update_songs_with_details.py"
+        if not gen2_file.exists():
+            return
+        try:
+            content = gen2_file.read_text(encoding="utf-8")
+            if 'BASE_PATH = Path(r"D:\\MusicData")' in content or 'BASE_PATH = Path("D:\\\\MusicData")' in content:
+                updated = content.replace(
+                    'BASE_PATH = Path(r"D:\\MusicData")',
+                    'BASE_PATH = Path(os.environ.get("MUSICDATA_REPOSITORY_ROOT", Path(__file__).resolve().parent))'
+                ).replace(
+                    'BASE_PATH = Path("D:\\\\MusicData")',
+                    'BASE_PATH = Path(os.environ.get("MUSICDATA_REPOSITORY_ROOT", Path(__file__).resolve().parent))'
+                )
+                gen2_file.write_text(updated, encoding="utf-8")
+        except Exception:
+            pass
+
     def run_generator_pipeline(self) -> Dict[str, Any]:
         stages: List[Dict[str, Any]] = []
         before_metrics = self.get_current_metrics()
 
         print(f"[GENERATOR PIPELINE] Workspace root: {self.repo.root}")
+
+        self._ensure_generator2_base_path_support()
 
         if isinstance(self.repo, CloudRepository):
             self._ensure_sparse_scanner_support()
@@ -207,6 +227,7 @@ def scan_all_albums() -> List[Dict]:
 
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
+        env["MUSICDATA_REPOSITORY_ROOT"] = str(self.repo.root)
         if isinstance(self.repo, CloudRepository):
             env["GENERATOR_CACHE_MODE"] = "1"
             env["STRICT_CLOUD_SAFETY"] = "1"
