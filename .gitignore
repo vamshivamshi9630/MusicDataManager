@@ -1,0 +1,46 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Python Cache & Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Staging & Temporary Workspaces
+.staging/
+staging/
+tmp/
+temp/
+musicdata_workspaces/
+
+# Logs & Debug Output
+*.log
+logs/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+desktop.ini

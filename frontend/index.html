@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MusicData Manager — Repository Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#f0fdf4', 500: '#22c55e', 600: '#16a34a', 700: '#15803d', 900: '#14532d' },
+                        darkbg: '#0f172a',
+                        cardbg: '#1e293b'
+                    }
+                }
+            }
+        }
+    </script>
+    <link href="https://cdn.jsdelivr.net/npm/lucide-static@0.321.0/font/lucide.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+        .glass-panel { background: rgba(30, 41, 59, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    </style>
+</head>
+<body class="min-h-screen pb-16">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-50 glass-panel border-b border-slate-800 px-4 py-3">
+        <div class="max-w-4xl mx-auto flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center text-white shadow-lg shadow-brand-500/30">
+                    <i class="icon-disc text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg leading-tight tracking-wide text-white">MusicData Manager</h1>
+                    <p class="text-xs text-slate-400 flex items-center gap-1.5">
+                        <span id="repo-status-badge" class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+                        <span id="repo-branch-info">Checking Git...</span>
+                    </p>
+                </div>
+            </div>
+            <button onclick="refreshRepoStatus()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Refresh Repository">
+                <i class="icon-refresh-cw text-sm"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-4xl mx-auto px-4 pt-6 space-y-6">
+
+        <!-- Stat Cards Bar -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="glass-panel p-3.5 rounded-xl">
+                <p class="text-xs text-slate-400 uppercase font-medium">Albums</p>
+                <p id="stat-albums-count" class="text-xl font-bold text-emerald-400 mt-1">...</p>
+            </div>
+            <div class="glass-panel p-3.5 rounded-xl">
+                <p class="text-xs text-slate-400 uppercase font-medium">Songs</p>
+                <p id="stat-songs-count" class="text-xl font-bold text-cyan-400 mt-1">...</p>
+            </div>
+            <div class="glass-panel p-3.5 rounded-xl">
+                <p class="text-xs text-slate-400 uppercase font-medium">PNG Artwork</p>
+                <p id="stat-png-count" class="text-xl font-bold text-purple-400 mt-1">...</p>
+            </div>
+            <div class="glass-panel p-3.5 rounded-xl">
+                <p class="text-xs text-slate-400 uppercase font-medium">0-Byte Shield</p>
+                <p id="stat-shield-count" class="text-xl font-bold text-amber-400 mt-1">Active</p>
+            </div>
+        </div>
+
+        <!-- Workflow Step Tabs -->
+        <div class="glass-panel p-1.5 rounded-xl flex space-x-1">
+            <button id="tab-btn-add" onclick="switchTab('add')" class="flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center bg-brand-600 text-white shadow">
+                <i class="icon-plus-circle inline mr-1 text-sm"></i> Add / Edit Album
+            </button>
+            <button id="tab-btn-browse" onclick="switchTab('browse')" class="flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center text-slate-400 hover:text-white">
+                <i class="icon-folder inline mr-1 text-sm"></i> Browse Repository
+            </button>
+        </div>
+
+        <!-- TAB 1: ADD / EDIT ALBUM WORKFLOW -->
+        <div id="tab-content-add" class="space-y-6">
+
+            <!-- Step 1: Album Details & Director Autocomplete -->
+            <div class="glass-panel p-5 rounded-2xl space-y-4">
+                <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                    <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">1</span>
+                    Album Identity & Metadata
+                </h2>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1.5">Album Name</label>
+                        <input type="text" id="input-album-name" oninput="onAlbumNameChanged()" placeholder="e.g. Pushpa2" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                        <p id="album-exists-badge" class="hidden text-xs text-amber-400 mt-1 flex items-center gap-1">
+                            <i class="icon-alert-triangle text-xs"></i> Album already exists in repository!
+                        </p>
+                    </div>
+
+                    <div class="relative">
+                        <label class="block text-xs text-slate-400 mb-1.5">Music Director</label>
+                        <input type="text" id="input-music-director" oninput="onDirectorInput(this.value)" placeholder="Type to search e.g. Devi Sri Prasad" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                        <div id="director-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-20 max-h-48 overflow-y-auto"></div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1.5">Release Year</label>
+                        <input type="number" id="input-year" value="2024" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1.5">Release Date (YYYY-MM-DD)</label>
+                        <input type="text" id="input-release-date" placeholder="2024-12-05" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: PNG Artwork Upload -->
+            <div class="glass-panel p-5 rounded-2xl space-y-4">
+                <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                    <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">2</span>
+                    Album Artwork (Strict PNG Only)
+                </h2>
+
+                <div class="flex flex-col sm:flex-row items-center gap-4">
+                    <div id="artwork-preview-box" class="w-28 h-28 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-slate-500 overflow-hidden relative group">
+                        <i class="icon-image text-3xl" id="artwork-placeholder-icon"></i>
+                        <img id="artwork-img-element" class="hidden w-full h-full object-cover">
+                    </div>
+
+                    <div class="flex-1 w-full space-y-2">
+                        <input type="file" id="input-artwork-file" accept="image/png" onchange="onArtworkSelected(this)" class="hidden">
+                        <button type="button" onclick="document.getElementById('input-artwork-file').click()" class="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl text-sm font-medium text-white transition flex items-center justify-center gap-2">
+                            <i class="icon-upload text-sm"></i> Select PNG Artwork
+                        </button>
+                        <p class="text-xs text-slate-400">File will automatically be saved as <code id="auto-png-name" class="text-brand-400 font-mono">&lt;AlbumName&gt;.png</code></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3: MP3 Song Uploads & Renaming -->
+            <div class="glass-panel p-5 rounded-2xl space-y-4">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">3</span>
+                        Audio Files (MP3 Only)
+                    </h2>
+                    <button type="button" onclick="document.getElementById('input-songs-files').click()" class="px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 rounded-lg text-xs font-semibold text-white transition">
+                        + Add MP3s
+                    </button>
+                    <input type="file" id="input-songs-files" accept="audio/mp3,.mp3" multiple onchange="onSongsSelected(this)" class="hidden">
+                </div>
+
+                <!-- Song Upload List -->
+                <div id="songs-list-container" class="space-y-2">
+                    <div class="p-6 text-center text-slate-500 border-2 border-dashed border-slate-800 rounded-xl">
+                        <i class="icon-music text-2xl mb-1 block"></i>
+                        <p class="text-xs">No MP3 songs selected yet. Click "+ Add MP3s" to select files.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 4: Preview & Atomic Sync Action -->
+            <div class="glass-panel p-5 rounded-2xl space-y-4">
+                <button type="button" onclick="triggerAtomicSync()" id="btn-sync-submit" class="w-full py-3.5 bg-brand-600 hover:bg-brand-500 active:bg-brand-700 text-white font-bold rounded-xl shadow-lg shadow-brand-600/30 text-base transition flex items-center justify-center gap-2">
+                    <i class="icon-git-commit text-lg"></i> Confirm & Sync to GitHub
+                </button>
+            </div>
+
+        </div>
+
+        <!-- TAB 2: BROWSE REPOSITORY -->
+        <div id="tab-content-browse" class="hidden space-y-4">
+            <div class="glass-panel p-4 rounded-2xl">
+                <input type="text" id="input-repo-search" oninput="filterBrowseAlbums(this.value)" placeholder="Search 658+ albums by name or music director..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+            </div>
+
+            <div id="browse-albums-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="p-8 text-center text-slate-500 col-span-full">Loading album catalog...</div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Sync Log / Success Modal -->
+    <div id="sync-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 space-y-4">
+            <div class="flex items-center justify-between">
+                <h3 class="font-bold text-lg text-white flex items-center gap-2" id="sync-modal-title">
+                    <i class="icon-loader text-brand-400 animate-spin"></i> Executing Synchronization
+                </h3>
+            </div>
+            
+            <div id="sync-modal-body" class="space-y-3 text-xs font-mono text-slate-300 max-h-60 overflow-y-auto bg-slate-950 p-4 rounded-xl border border-slate-800">
+                <p>1. Validating files & 0-byte shield...</p>
+            </div>
+
+            <div class="pt-2 flex justify-end">
+                <button type="button" id="btn-sync-modal-close" onclick="closeSyncModal()" class="hidden px-4 py-2 bg-brand-600 text-white rounded-xl font-semibold text-sm">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script>
+        const API_BASE = "/api";
+        let state = {
+            albums: [],
+            selectedAlbum: "",
+            artworkFile: null,
+            songs: []
+        };
+
+        document.addEventListener("DOMContentLoaded", () => {
+            refreshRepoStatus();
+            loadAlbumsCatalog();
+        });
+
+        async function refreshRepoStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                const data = await res.json();
+                document.getElementById('repo-branch-info').innerText = `${data.git.branch} (${data.git.head})`;
+                
+                const diagRes = await fetch(`${API_BASE}/albums`);
+                const diagData = await diagRes.json();
+                document.getElementById('stat-albums-count').innerText = diagData.total_albums;
+                state.albums = diagData.albums;
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadAlbumsCatalog() {
+            try {
+                const res = await fetch(`${API_BASE}/albums`);
+                const data = await res.json();
+                state.albums = data.albums;
+                renderBrowseGrid(data.albums);
+                document.getElementById('stat-albums-count').innerText = data.total_albums;
+                
+                let totalSongs = data.albums.reduce((acc, a) => acc + a.songCount, 0);
+                document.getElementById('stat-songs-count').innerText = totalSongs;
+                
+                let pngCount = data.albums.filter(a => a.hasArtwork).length;
+                document.getElementById('stat-png-count').innerText = pngCount;
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function switchTab(tab) {
+            document.getElementById('tab-content-add').classList.toggle('hidden', tab !== 'add');
+            document.getElementById('tab-content-browse').classList.toggle('hidden', tab !== 'browse');
+            
+            document.getElementById('tab-btn-add').className = tab === 'add' 
+                ? "flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center bg-brand-600 text-white shadow"
+                : "flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center text-slate-400 hover:text-white";
+                
+            document.getElementById('tab-btn-browse').className = tab === 'browse' 
+                ? "flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center bg-brand-600 text-white shadow"
+                : "flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center text-slate-400 hover:text-white";
+        }
+
+        function onAlbumNameChanged() {
+            const val = document.getElementById('input-album-name').value.trim();
+            state.selectedAlbum = val;
+            document.getElementById('auto-png-name').innerText = val ? `${val}.png` : '<AlbumName>.png';
+
+            const match = state.albums.find(a => a.name.lower === val.toLowerCase());
+            document.getElementById('album-exists-badge').classList.toggle('hidden', !match);
+
+            if (match) {
+                document.getElementById('input-music-director').value = match.musicDirector || '';
+                document.getElementById('input-year').value = match.year || 2024;
+            }
+        }
+
+        async function onDirectorInput(val) {
+            const sugBox = document.getElementById('director-suggestions');
+            if (!val.trim()) {
+                sugBox.classList.add('hidden');
+                return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/directors/autocomplete?q=${encodeURIComponent(val)}`);
+                const data = await res.json();
+                if (data.suggestions && data.suggestions.length > 0) {
+                    sugBox.innerHTML = data.suggestions.map(s => 
+                        `<div onclick="selectDirector('${s}')" class="px-3.5 py-2 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0">${s}</div>`
+                    ).join('');
+                    sugBox.classList.remove('hidden');
+                } else {
+                    sugBox.classList.add('hidden');
+                }
+            } catch (e) {
+                sugBox.classList.add('hidden');
+            }
+        }
+
+        function selectDirector(name) {
+            document.getElementById('input-music-director').value = name;
+            document.getElementById('director-suggestions').classList.add('hidden');
+        }
+
+        function onArtworkSelected(input) {
+            if (!input.files || !input.files[0]) return;
+            const file = input.files[0];
+            if (!file.name.toLowerCase().endsWith('.png')) {
+                alert('Artwork artwork must strictly be a PNG file (.png)');
+                input.value = '';
+                return;
+            }
+            state.artworkFile = file;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                document.getElementById('artwork-placeholder-icon').classList.add('hidden');
+                const img = document.getElementById('artwork-img-element');
+                img.src = e.target.result;
+                img.classList.remove('hidden');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function onSongsSelected(input) {
+            if (!input.files || input.files.length === 0) return;
+            for (let f of input.files) {
+                if (f.name.toLowerCase().endsWith('.mp3')) {
+                    state.songs.push({
+                        file: f,
+                        desiredName: f.name.replace(/\.mp3$/i, '')
+                    });
+                }
+            }
+            renderSongsList();
+        }
+
+        function renderSongsList() {
+            const container = document.getElementById('songs-list-container');
+            if (state.songs.length === 0) {
+                container.innerHTML = `
+                    <div class="p-6 text-center text-slate-500 border-2 border-dashed border-slate-800 rounded-xl">
+                        <i class="icon-music text-2xl mb-1 block"></i>
+                        <p class="text-xs">No MP3 songs selected yet. Click "+ Add MP3s" to select files.</p>
+                    </div>`;
+                return;
+            }
+
+            container.innerHTML = state.songs.map((s, idx) => `
+                <div class="p-3.5 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div class="flex-1">
+                        <p class="text-xs text-slate-400 font-mono">Original: ${s.file.name}</p>
+                        <input type="text" value="${s.desiredName}" oninput="updateSongName(${idx}, this.value)" placeholder="Song Name" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500">
+                    </div>
+                    <button type="button" onclick="removeSong(${idx})" class="text-red-400 hover:text-red-300 text-xs flex items-center gap-1 self-end sm:self-center">
+                        <i class="icon-trash text-xs"></i> Remove
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        function updateSongName(idx, val) {
+            if (state.songs[idx]) {
+                state.songs[idx].desiredName = val;
+            }
+        }
+
+        function removeSong(idx) {
+            state.songs.splice(idx, 1);
+            renderSongsList();
+        }
+
+        function renderBrowseGrid(albums) {
+            const grid = document.getElementById('browse-albums-grid');
+            if (albums.length === 0) {
+                grid.innerHTML = `<div class="p-8 text-center text-slate-500 col-span-full">No matching albums found.</div>`;
+                return;
+            }
+
+            grid.innerHTML = albums.slice(0, 40).map(a => `
+                <div class="p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between hover:border-slate-700 transition">
+                    <div>
+                        <h4 class="font-bold text-sm text-white">${a.name}</h4>
+                        <p class="text-xs text-slate-400">${a.musicDirector} • ${a.year}</p>
+                    </div>
+                    <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 text-emerald-400 border border-slate-700">${a.songCount} songs</span>
+                </div>
+            `).join('');
+        }
+
+        function filterBrowseAlbums(q) {
+            const query = q.toLowerCase().trim();
+            const filtered = state.albums.filter(a => a.name.toLowerCase().includes(query) || (a.musicDirector && a.musicDirector.toLowerCase().includes(query)));
+            renderBrowseGrid(filtered);
+        }
+
+        async function triggerAtomicSync() {
+            const albumName = document.getElementById('input-album-name').value.trim();
+            const musicDirector = document.getElementById('input-music-director').value.trim();
+            const year = parseInt(document.getElementById('input-year').value) || 2024;
+            const releaseDate = document.getElementById('input-release-date').value.trim();
+
+            if (!albumName) {
+                alert('Please enter an Album Name before syncing.');
+                return;
+            }
+
+            const modal = document.getElementById('sync-modal');
+            const logBox = document.getElementById('sync-modal-body');
+            modal.classList.remove('hidden');
+            logBox.innerHTML = `<p>1. Initializing album identity: <b>${albumName}</b>...</p>`;
+
+            try {
+                // 1. Create / Select Album
+                const metaRes = await fetch(`${API_BASE}/albums/create-or-select`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        album_name: albumName,
+                        musicDirector: musicDirector || 'Unknown',
+                        year: year,
+                        releaseDate: releaseDate || `${year}-01-01`
+                    })
+                });
+                const metaData = await metaRes.json();
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Album metadata saved.</p>`;
+
+                // 2. Upload PNG Artwork
+                if (state.artworkFile) {
+                    logBox.innerHTML += `<p>2. Validating & uploading PNG artwork: <b>${albumName}.png</b>...</p>`;
+                    const artFd = new FormData();
+                    artFd.append('file', state.artworkFile);
+                    const artRes = await fetch(`${API_BASE}/upload/artwork/${encodeURIComponent(albumName)}`, {
+                        method: 'POST',
+                        body: artFd
+                    });
+                    if (!artRes.ok) {
+                        const err = await artRes.json();
+                        throw new Error(err.detail);
+                    }
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ Artwork validated & saved.</p>`;
+                }
+
+                // 3. Upload Songs
+                if (state.songs.length > 0) {
+                    logBox.innerHTML += `<p>3. Validating & uploading ${state.songs.length} MP3 files...</p>`;
+                    for (let s of state.songs) {
+                        const songFd = new FormData();
+                        songFd.append('file', s.file);
+                        songFd.append('desired_song_name', s.desiredName);
+                        const songRes = await fetch(`${API_BASE}/upload/song/${encodeURIComponent(albumName)}`, {
+                            method: 'POST',
+                            body: songFd
+                        });
+                        if (!songRes.ok) {
+                            const err = await songRes.json();
+                            throw new Error(err.detail);
+                        }
+                    }
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ All MP3 files passed 0-byte shield & validation.</p>`;
+                }
+
+                // 4. Run Generator & Git Push
+                logBox.innerHTML += `<p>4. Running v2 Metadata Generator & atomic Git Push to GitHub...</p>`;
+                const execRes = await fetch(`${API_BASE}/sync/execute/${encodeURIComponent(albumName)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ album_name: albumName })
+                });
+
+                if (!execRes.ok) {
+                    const err = await execRes.json();
+                    throw new Error(err.detail);
+                }
+
+                const execData = await execRes.json();
+                logBox.innerHTML += `
+                    <p class="text-emerald-400 font-bold">✓ SYNC COMPLETED SUCCESSFULLY!</p>
+                    <p>Git Commit SHA: <b>${execData.git_summary.commit_sha || 'Committed'}</b></p>
+                    <p class="text-cyan-400">Tunezy Android app is now ready to stream updated songs/artwork.</p>
+                `;
+
+                document.getElementById('sync-modal-title').innerHTML = `<i class="icon-check-circle text-emerald-400"></i> Sync Complete!`;
+                document.getElementById('btn-sync-modal-close').classList.remove('hidden');
+
+                // Reset inputs
+                state.songs = [];
+                state.artworkFile = null;
+                renderSongsList();
+                refreshRepoStatus();
+
+            } catch (err) {
+                logBox.innerHTML += `<p class="text-red-400 font-bold">❌ Error: ${err.message}</p>`;
+                document.getElementById('sync-modal-title').innerHTML = `<i class="icon-x-circle text-red-400"></i> Sync Failed`;
+                document.getElementById('btn-sync-modal-close').classList.remove('hidden');
+            }
+        }
+
+        function closeSyncModal() {
+            document.getElementById('sync-modal').classList.add('hidden');
+            document.getElementById('btn-sync-modal-close').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>

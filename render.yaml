@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: musicdata-manager-cloud
+    env: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /api/health
+    envVars:
+      - key: CLOUD_MODE
+        value: "1"
+      - key: GITHUB_OWNER
+        value: vamshivamshi9630
+      - key: GITHUB_REPOSITORY
+        value: MusicData
+      - key: GITHUB_BRANCH
+        value: main
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_INSTALLATION_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
