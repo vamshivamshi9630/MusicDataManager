@@ -249,7 +249,7 @@ class CloudRepository(IRepositoryProvider):
         else:
             self.remote_url = remote_url or f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
 
-    def provision_blobless_workspace(self, source_repo_override: Optional[Path] = None) -> Path:
+    def provision_blobless_workspace(self, album_name: Optional[str] = None, source_repo_override: Optional[Path] = None) -> Path:
         if self.workspace_dir.exists():
             shutil.rmtree(self.workspace_dir, onerror=_remove_readonly)
 
@@ -259,27 +259,50 @@ class CloudRepository(IRepositoryProvider):
         if source_repo_override and source_repo_override.exists():
             shutil.copytree(str(source_repo_override), str(self._root))
         else:
-            cmd = [
+            env = os.environ.copy()
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            
+            # Step 1: Shallow blobless clone without checkout (super fast, < 4s)
+            cmd_clone = [
                 "git", "clone",
                 "--filter=blob:none",
+                "--no-checkout",
+                "--depth", "1",
                 "--branch", settings.GITHUB_BRANCH,
                 self.remote_url,
                 str(self._root)
             ]
-            env = os.environ.copy()
-            env["GIT_TERMINAL_PROMPT"] = "0"
             try:
-                res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=35)
+                res = subprocess.run(cmd_clone, capture_output=True, text=True, env=env, timeout=25)
                 if res.returncode != 0:
-                    raise CloudWorkspaceError(f"Blobless clone failed (exit code {res.returncode}): {res.stderr or res.stdout}")
+                    raise CloudWorkspaceError(f"Minimal repository fetch failed (exit code {res.returncode}): {res.stderr or res.stdout}")
             except subprocess.TimeoutExpired:
-                raise CloudWorkspaceError("Blobless clone timed out after 35 seconds.")
+                raise CloudWorkspaceError("Minimal repository fetch timed out after 25 seconds.")
+
+            # Step 2: Initialize sparse-checkout for metadata, generator, scripts, and target album
+            subprocess.run(["git", "sparse-checkout", "init", "--cone"], cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
+            
+            sparse_targets = [
+                "metadata",
+                "generator",
+                "generate_metadata.py",
+                "generate_or_update_songs_with_details.py",
+                "songs_with_details.json",
+                "MusiDirector_Year.txt"
+            ]
+            if album_name:
+                sparse_targets.append(album_name)
+
+            subprocess.run(["git", "sparse-checkout", "set"] + sparse_targets, cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
+            
+            # Step 3: Checkout branch main
+            subprocess.run(["git", "checkout", settings.GITHUB_BRANCH], cwd=self._root, capture_output=True, text=True, env=env, timeout=35, check=False)
 
         # Configure author identity for Cloud commit operations
         subprocess.run(["git", "config", "user.name", "MusicData Manager Cloud"], cwd=self._root, check=False)
         subprocess.run(["git", "config", "user.email", "cloud-agent@musicdata.internal"], cwd=self._root, check=False)
 
-        print(f"[CLOUD WORKSPACE] Provisioned blobless repository workspace at '{self._root}'")
+        print(f"[CLOUD WORKSPACE] Provisioned minimal sparse repository workspace at '{self._root}'")
         return self._root
 
     def cleanup_workspace(self) -> bool:

@@ -466,9 +466,9 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
         job_id = f"job_cloud_sync_{int(time.time() * 1000)}"
         staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging" / album_name
         try:
-            # Provision blobless workspace
+            # Provision minimal sparse blobless workspace
             cloud_repo = CloudRepository(job_id=job_id)
-            workspace_dir = cloud_repo.provision_blobless_workspace()
+            workspace_dir = cloud_repo.provision_blobless_workspace(album_name=album_name)
             
             # Copy staged files into blobless workspace album directory
             target_album_dir = cloud_repo.root / album_name
