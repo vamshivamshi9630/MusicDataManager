@@ -706,6 +706,21 @@
             renderBrowseGrid(filtered);
         }
 
+        async function parseJsonResponse(res) {
+            const text = await res.text();
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                return {
+                    success: false,
+                    error: {
+                        code: "NON_JSON_RESPONSE",
+                        message: `Server returned non-JSON response (HTTP ${res.status}): ${text.substring(0, 120)}`
+                    }
+                };
+            }
+        }
+
         async function triggerAtomicSync() {
             const albumName = document.getElementById('input-album-name').value.trim();
             const musicDirector = document.getElementById('input-music-director').value.trim();
@@ -717,12 +732,21 @@
                 return;
             }
 
+            const newSongs = state.songs.filter(s => !s.isExisting && s.file);
+            for (let s of newSongs) {
+                if (!s.file || s.file.size === 0) {
+                    alert(`Zero-Byte Shield Triggered: File '${s.filename}' has 0 bytes and cannot be uploaded.`);
+                    return;
+                }
+            }
+
             const modal = document.getElementById('sync-modal');
             const logBox = document.getElementById('sync-modal-body');
             modal.classList.remove('hidden');
             logBox.innerHTML = `<p>1. Initializing album identity: <b>${albumName}</b> (${state.workflowMode.toUpperCase()} mode)...</p>`;
 
             try {
+                // 1. Create / Select Album
                 const metaRes = await fetch(`${API_BASE}/albums/create-or-select`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -734,35 +758,33 @@
                         mode: state.workflowMode
                     })
                 });
-
-                if (!metaRes.ok) {
-                    const err = await metaRes.json();
-                    const detail = err.detail;
-                    if (typeof detail === 'object' && detail.duplicate) {
-                        throw new Error(detail.reason || `Duplicate album '${detail.matched_album}' detected!`);
-                    }
-                    throw new Error(detail || "Album creation failed.");
+                const metaData = await parseJsonResponse(metaRes);
+                if (!metaRes.ok || metaData.success === false) {
+                    const errObj = metaData.error || metaData.detail || metaData;
+                    const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
+                    throw new Error(msg);
                 }
-
-                const metaData = await metaRes.json();
                 logBox.innerHTML += `<p class="text-emerald-400">✓ Album metadata saved.</p>`;
 
+                // 2. Upload Artwork
                 if (state.artworkFile) {
-                    logBox.innerHTML += `<p>2. Validating & uploading PNG artwork: <b>${albumName}.png</b>...</p>`;
+                    logBox.innerHTML += `<p>2. Validating & uploading artwork: <b>${albumName}.png</b>...</p>`;
                     const artFd = new FormData();
                     artFd.append('file', state.artworkFile);
                     const artRes = await fetch(`${API_BASE}/upload/artwork/${encodeURIComponent(albumName)}`, {
                         method: 'POST',
                         body: artFd
                     });
-                    if (!artRes.ok) {
-                        const err = await artRes.json();
-                        throw new Error(err.detail);
+                    const artData = await parseJsonResponse(artRes);
+                    if (!artRes.ok || artData.success === false) {
+                        const errObj = artData.error || artData.detail || artData;
+                        const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
+                        throw new Error(msg);
                     }
                     logBox.innerHTML += `<p class="text-emerald-400">✓ Artwork validated & saved as ${albumName}.png.</p>`;
                 }
 
-                const newSongs = state.songs.filter(s => !s.isExisting && s.file);
+                // 3. Upload New Songs
                 if (newSongs.length > 0) {
                     logBox.innerHTML += `<p>3. Validating & uploading ${newSongs.length} new MP3 files...</p>`;
                     for (let s of newSongs) {
@@ -773,27 +795,31 @@
                             method: 'POST',
                             body: songFd
                         });
-                        if (!songRes.ok) {
-                            const err = await songRes.json();
-                            throw new Error(err.detail);
+                        const songData = await parseJsonResponse(songRes);
+                        if (!songRes.ok || songData.success === false) {
+                            const errObj = songData.error || songData.detail || songData;
+                            const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
+                            throw new Error(`[${s.filename}] ${msg}`);
                         }
                     }
-                    logBox.innerHTML += `<p class="text-emerald-400">✓ All MP3 files passed 0-byte shield & validation.</p>`;
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ All ${newSongs.length} MP3 files passed 0-byte shield & validation.</p>`;
                 }
 
+                // 4. Run Generator & Git Push
                 logBox.innerHTML += `<p>4. Running Metadata Generator & atomic Git Push to GitHub...</p>`;
                 const execRes = await fetch(`${API_BASE}/sync/execute/${encodeURIComponent(albumName)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ album_name: albumName })
                 });
+                const execData = await parseJsonResponse(execRes);
 
-                if (!execRes.ok) {
-                    const err = await execRes.json();
-                    throw new Error(err.detail);
+                if (!execRes.ok || execData.success === false) {
+                    const errObj = execData.error || execData.detail || execData;
+                    const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
+                    throw new Error(msg);
                 }
 
-                const execData = await execRes.json();
                 logBox.innerHTML += `
                     <p class="text-emerald-400 font-bold">✓ SYNC COMPLETED SUCCESSFULLY!</p>
                     <p>Git Commit SHA: <b>${execData.git_summary ? (execData.git_summary.commit_sha || 'Committed') : 'Completed'}</b></p>
@@ -808,7 +834,7 @@
                 loadAlbumsCatalog();
 
             } catch (err) {
-                logBox.innerHTML += `<p class="text-red-400 font-bold">❌ Error: ${err.message}</p>`;
+                logBox.innerHTML += `<p class="text-red-400 font-bold">❌ Sync Error: ${err.message}</p>`;
                 document.getElementById('sync-modal-title').innerHTML = `<i class="icon-x-circle text-red-400"></i> Sync Failed`;
                 document.getElementById('btn-sync-modal-close').classList.remove('hidden');
             }

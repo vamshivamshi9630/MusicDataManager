@@ -1,13 +1,15 @@
 import os
 import json
 import shutil
+import tempfile
+import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, Header
 from pydantic import BaseModel
 
 from backend.core.config import settings
-from backend.core.repository import RepositoryContext, PathTraversalError
+from backend.core.repository import RepositoryContext, CloudRepository, PathTraversalError
 from backend.services.validation import ValidationService, FileValidationError
 from backend.services.metadata import MetadataService
 from backend.services.duplicate import DuplicateDetectionService
@@ -134,7 +136,6 @@ def get_stats():
 
 @router.get("/albums/search")
 def search_albums_endpoint(q: str = Query("", description="Query string for fuzzy album search")):
-    """Generic fuzzy search across all existing catalog albums."""
     if is_cloud_mode():
         return cloud_catalog_service.search_albums(q)
 
@@ -158,7 +159,6 @@ def search_albums_endpoint(q: str = Query("", description="Query string for fuzz
 
 @router.post("/albums/check-duplicate")
 def check_duplicate_album_endpoint(req: CheckDuplicateRequest):
-    """Evaluates candidate album name for exact and fuzzy near-duplicates."""
     if is_cloud_mode():
         return cloud_catalog_service.check_duplicate_album(req.album_name)
 
@@ -264,7 +264,6 @@ def get_album_details(album_name: str):
 
 @router.post("/albums/create-or-select")
 def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)):
-    # Perform backend near-duplicate protection if adding a new album
     if req.mode == "add":
         if is_cloud_mode():
             dup_res = cloud_catalog_service.check_duplicate_album(req.album_name)
@@ -281,6 +280,7 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
 
     if is_cloud_mode():
         return {
+            "success": True,
             "already_exists": False,
             "album_name": req.album_name,
             "metadata": req.dict(),
@@ -300,6 +300,7 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
     existing_info = ms.load_album_info(album_name)
 
     return {
+        "success": True,
         "already_exists": already_exists,
         "album_name": album_name,
         "metadata": existing_info,
@@ -312,7 +313,14 @@ async def upload_artwork(album_name: str, file: UploadFile = File(...), _auth=De
     try:
         png_bytes = validation_service.process_and_convert_to_png(content, file.filename)
     except FileValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ARTWORK_VALIDATION_ERROR",
+                "file": file.filename,
+                "message": f"Artwork validation failed: {str(e)}"
+            }
+        )
 
     if is_cloud_mode():
         return {
@@ -361,7 +369,25 @@ async def upload_song(
         except FileValidationError as e:
             if staging_file.exists():
                 staging_file.unlink()
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "MP3_VALIDATION_ERROR",
+                    "file": file.filename,
+                    "message": f"MP3 validation failed for file '{file.filename}': {str(e)}"
+                }
+            )
+        except Exception as e:
+            if staging_file.exists():
+                staging_file.unlink()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "MP3_PROCESSING_ERROR",
+                    "file": file.filename,
+                    "message": f"Failed to process MP3 stream for '{file.filename}': {str(e)}"
+                }
+            )
 
         if staging_file.exists():
             staging_file.unlink()
@@ -401,7 +427,14 @@ async def upload_song(
     except FileValidationError as e:
         if staging_file.exists():
             staging_file.unlink()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "MP3_VALIDATION_ERROR",
+                "file": file.filename,
+                "message": f"MP3 validation failed for file '{file.filename}': {str(e)}"
+            }
+        )
 
     dup_analysis = ds.analyze_uploaded_song(
         album_name=album_name,
@@ -507,6 +540,41 @@ def sync_preview(album_name: str):
 
 @router.post("/sync/execute/{album_name}")
 def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
+    if is_cloud_mode():
+        album_name = req.album_name.strip()
+        job_id = f"job_cloud_sync_{int(time.time() * 1000)}"
+        try:
+            cloud_repo = CloudRepository(job_id=job_id)
+            workspace_dir = cloud_repo.provision_blobless_workspace()
+            
+            gen_svc = GeneratorService(RepositoryContext(override_root=cloud_repo.root))
+            gen_result = gen_svc.run_generator_pipeline()
+
+            git_svc = GitSyncService(RepositoryContext(override_root=cloud_repo.root))
+            git_result = git_svc.stage_commit_and_push(
+                album_name=album_name,
+                custom_commit_msg=req.custom_commit_message
+            )
+
+            cloud_repo.cleanup_workspace()
+
+            return {
+                "success": True,
+                "status": "COMPLETED",
+                "album_name": album_name,
+                "generator_summary": gen_result,
+                "git_summary": git_result,
+                "tunezy_ready": True
+            }
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "CLOUD_SYNC_FAILED",
+                    "message": f"Cloud Sync Execution Failed: {str(e)}"
+                }
+            )
+
     rc = get_repo_context()
     gen_svc = get_generator_service(rc)
     git_svc = get_git_service(rc)
@@ -533,6 +601,7 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
         raise HTTPException(status_code=500, detail=f"Git Synchronization Failed: {e}")
 
     return {
+        "success": True,
         "status": "COMPLETED",
         "album_name": album_name,
         "generator_summary": gen_result,

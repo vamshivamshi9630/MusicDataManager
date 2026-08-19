@@ -110,7 +110,7 @@ class TestGenericFuzzySearch(unittest.TestCase):
             "year": 2024
         })
         self.assertEqual(res.status_code, 400)
-        detail = res.json()["detail"]
+        detail = res.json().get("error", res.json().get("detail"))
         self.assertTrue(detail["duplicate"])
         self.assertEqual(detail["matched_album"], "Pushpa")
 
