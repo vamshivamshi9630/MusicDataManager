@@ -1,6 +1,7 @@
 import sys
 import logging
 import traceback
+import os
 from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request, status, HTTPException
