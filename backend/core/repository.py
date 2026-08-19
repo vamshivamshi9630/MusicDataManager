@@ -244,7 +244,14 @@ class CloudRepository(IRepositoryProvider):
         
         # Build authenticated remote URL if token is available
         auth_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN")
-        if auth_token and "x-access-token" not in (remote_url or ""):
+        if not auth_token:
+            try:
+                from backend.services.github_auth import GitHubTokenManager
+                auth_token = GitHubTokenManager().get_installation_access_token()
+            except Exception:
+                pass
+
+        if auth_token and not str(auth_token).startswith("ghs_mock") and "x-access-token" not in (remote_url or ""):
             self.remote_url = f"https://x-access-token:{auth_token}@github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
         else:
             self.remote_url = remote_url or f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"

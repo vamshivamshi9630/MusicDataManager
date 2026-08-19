@@ -143,6 +143,18 @@ class BaseGitSyncService(IGitSyncProvider):
             }
 
         # Push commit to origin main
+        if isinstance(self.repo, CloudRepository):
+            auth_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN")
+            if not auth_token:
+                try:
+                    from backend.services.github_auth import GitHubTokenManager
+                    auth_token = GitHubTokenManager().get_installation_access_token()
+                except Exception:
+                    pass
+            if auth_token and not str(auth_token).startswith("ghs_mock"):
+                auth_url = f"https://x-access-token:{auth_token}@github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
+                self._run_git(["remote", "set-url", "origin", auth_url], check=False)
+
         try:
             push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH], timeout=35)
         except GitSyncError as e:
