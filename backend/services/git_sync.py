@@ -18,7 +18,7 @@ class IGitSyncProvider(ABC):
         pass
 
     @abstractmethod
-    def stage_commit_and_push(self, album_name: str, custom_commit_msg: str = "", push_enabled: bool = True) -> Dict[str, Any]:
+    def stage_commit_and_push(self, album_name: str, mode: str = "add", custom_commit_msg: str = "", push_enabled: bool = True) -> Dict[str, Any]:
         pass
 
 class BaseGitSyncService(IGitSyncProvider):
@@ -57,14 +57,13 @@ class BaseGitSyncService(IGitSyncProvider):
         }
 
     def verify_remote_sync(self) -> Dict[str, Any]:
-        # Avoid network fetch if offline/testing or push disabled
         if os.environ.get("SOURCE_REPO_OVERRIDE") or not settings.GITHUB_APP_INSTALLATION_ID:
             local_head = self._run_git(["rev-parse", "HEAD"], check=False)[:12] or "dry_run_head"
             return {"local_head": local_head, "remote_head": local_head, "in_sync": True}
 
         try:
             self._run_git(["fetch", "origin", settings.GITHUB_BRANCH], check=False)
-            remote_head = self._run_git(["rev-parse", f"origin/{settings.GITHUB_BRANCH}"], check=False)[:12]
+            remote_head = self._run_git(["parse-remote", f"origin/{settings.GITHUB_BRANCH}"], check=False)[:12]
             local_head = self._run_git(["rev-parse", "HEAD"], check=False)[:12]
             return {
                 "local_head": local_head,
@@ -74,16 +73,23 @@ class BaseGitSyncService(IGitSyncProvider):
         except Exception as e:
             return {"error": str(e), "in_sync": False}
 
-    def stage_commit_and_push(self, album_name: str, custom_commit_msg: str = "", push_enabled: bool = True) -> Dict[str, Any]:
-        album_rel_path = album_name
-        metadata_rel_path = "metadata"
+    def stage_commit_and_push(self, album_name: str, mode: str = "add", custom_commit_msg: str = "", push_enabled: bool = True) -> Dict[str, Any]:
+        # Exact commit message rule:
+        # ADD mode: "added songs/album with <Album Name>"
+        # EDIT mode: "edited songs/album with <Album Name>"
+        if custom_commit_msg and custom_commit_msg.strip():
+            msg = custom_commit_msg.strip()
+        elif mode == "edit":
+            msg = f"edited songs/album with {album_name}"
+        else:
+            msg = f"added songs/album with {album_name}"
 
-        self._run_git(["add", album_rel_path, metadata_rel_path])
+        # Stage all changes (album folder + PNG artwork + MP3s + generated metadata/indexes)
+        self._run_git(["add", "."])
         
         status_out = self._run_git(["status", "--porcelain"], check=False)
-        msg = custom_commit_msg or f"Sync album: {album_name} — metadata and audio updates"
 
-        if not status_out:
+        if not status_out or not status_out.strip():
             head_sha = self._run_git(["rev-parse", "HEAD"], check=False)[:12] or "clean_tree_sha"
             return {
                 "committed": False,
@@ -102,22 +108,19 @@ class BaseGitSyncService(IGitSyncProvider):
                 "pushed": False,
                 "commit_sha": commit_sha,
                 "commit_message": msg,
-                "message": "Test Mode: Git push disabled for safety."
+                "message": "Git push disabled for safety."
             }
 
         push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH])
-        remote_check = self.verify_remote_sync()
 
         return {
             "committed": True,
             "pushed": True,
             "commit_sha": commit_sha,
             "commit_message": msg,
-            "remote_check": remote_check,
             "push_log": push_out
         }
 
-# Implementations
 LocalGitSyncService = BaseGitSyncService
 CloudGitSyncService = BaseGitSyncService
 GitSyncService = BaseGitSyncService

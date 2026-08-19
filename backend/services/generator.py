@@ -14,9 +14,7 @@ class GeneratorService:
         self.repo = repo_context
 
     def get_current_metrics(self) -> Dict[str, int]:
-        manifest_file = self.repo.metadata_dir / "manifest.json"
         stats_file = self.repo.metadata_dir / "statistics.json"
-
         metrics = {"total_albums": 0, "total_songs": 0}
 
         if stats_file.exists():
@@ -37,11 +35,11 @@ class GeneratorService:
     def run_generator_pipeline(self) -> Dict[str, Any]:
         before_metrics = self.get_current_metrics()
 
+        # Step 3: Run Authoritative Generator #1 (generate_metadata.py)
         v2_script = self.repo.root / "generate_metadata.py"
         if not v2_script.exists():
-            raise GeneratorValidationError(f"Authoritative generator script '{v2_script}' not found.")
+            raise GeneratorValidationError(f"Authoritative Generator #1 script '{v2_script}' not found.")
 
-        # Environment configuration
         env = os.environ.copy()
         if isinstance(self.repo, CloudRepository):
             env["GENERATOR_CACHE_MODE"] = "1"
@@ -49,7 +47,7 @@ class GeneratorService:
             env["CLOUD_MODE"] = "1"
 
         try:
-            res = subprocess.run(
+            res1 = subprocess.run(
                 [sys.executable, str(v2_script)],
                 cwd=self.repo.root,
                 env=env,
@@ -57,21 +55,23 @@ class GeneratorService:
                 text=True,
                 check=True
             )
-            v2_output_log = res.stdout
+            v2_output_log = res1.stdout
         except subprocess.CalledProcessError as e:
-            raise GeneratorValidationError(f"v2 Metadata Generator failed with code {e.returncode}:\n{e.stderr or e.stdout}")
+            err_msg = e.stderr or e.stdout or str(e)
+            raise GeneratorValidationError(f"Generator #1 (generate_metadata.py) failed (exit code {e.returncode}):\n{err_msg}")
 
         self._validate_generated_catalogs()
 
+        # Safety Check: Total songs should not drop unexpectedly
         after_metrics = self.get_current_metrics()
-
         if after_metrics["total_songs"] < before_metrics["total_songs"]:
             raise GeneratorValidationError(
                 f"UNEXPECTED DELETION SHIELD TRIGGERED: Total song count dropped from {before_metrics['total_songs']} to {after_metrics['total_songs']}. Halting sync for safety."
             )
 
+        # Step 4: Run Authoritative Generator #2 (generate_or_update_songs_with_details.py)
         legacy_script = self.repo.root / "generate_or_update_songs_with_details.py"
-        legacy_output_log = "Legacy generator not executed."
+        legacy_output_log = "Generator #2 skipped (script not present)."
         if legacy_script.exists():
             try:
                 legacy_res = subprocess.run(
@@ -80,11 +80,12 @@ class GeneratorService:
                     env=env,
                     capture_output=True,
                     text=True,
-                    check=False
+                    check=True  # Strictly enforce exit code == 0!
                 )
                 legacy_output_log = legacy_res.stdout
-            except Exception as e:
-                legacy_output_log = f"Legacy generator warning: {e}"
+            except subprocess.CalledProcessError as e:
+                err_msg = e.stderr or e.stdout or str(e)
+                raise GeneratorValidationError(f"Generator #2 (generate_or_update_songs_with_details.py) failed (exit code {e.returncode}):\n{err_msg}")
 
         return {
             "success": True,
@@ -92,8 +93,8 @@ class GeneratorService:
             "after_metrics": after_metrics,
             "songs_added": after_metrics["total_songs"] - before_metrics["total_songs"],
             "albums_count": after_metrics["total_albums"],
-            "v2_log": v2_output_log,
-            "legacy_log": legacy_output_log
+            "gen1_log": v2_output_log,
+            "gen2_log": legacy_output_log
         }
 
     def _validate_generated_catalogs(self):

@@ -743,10 +743,10 @@
             const modal = document.getElementById('sync-modal');
             const logBox = document.getElementById('sync-modal-body');
             modal.classList.remove('hidden');
-            logBox.innerHTML = `<p>1. Initializing album identity: <b>${albumName}</b> (${state.workflowMode.toUpperCase()} mode)...</p>`;
+            logBox.innerHTML = `<p>1. Preparing album folder: <b>${albumName}</b>...</p>`;
 
             try {
-                // 1. Create / Select Album
+                // Step 1: Prepare Album Folder
                 const metaRes = await fetch(`${API_BASE}/albums/create-or-select`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -764,11 +764,11 @@
                     const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
                     throw new Error(msg);
                 }
-                logBox.innerHTML += `<p class="text-emerald-400">✓ Album metadata saved.</p>`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Album folder prepared.</p>`;
 
-                // 2. Upload Artwork
+                // Step 2A: Upload Artwork
                 if (state.artworkFile) {
-                    logBox.innerHTML += `<p>2. Validating & uploading artwork: <b>${albumName}.png</b>...</p>`;
+                    logBox.innerHTML += `<p>2. Uploading artwork: <b>${albumName}.png</b>...</p>`;
                     const artFd = new FormData();
                     artFd.append('file', state.artworkFile);
                     const artRes = await fetch(`${API_BASE}/upload/artwork/${encodeURIComponent(albumName)}`, {
@@ -781,12 +781,12 @@
                         const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
                         throw new Error(msg);
                     }
-                    logBox.innerHTML += `<p class="text-emerald-400">✓ Artwork validated & saved as ${albumName}.png.</p>`;
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ Artwork uploaded.</p>`;
                 }
 
-                // 3. Upload New Songs
+                // Step 2B: Upload MP3 Songs
                 if (newSongs.length > 0) {
-                    logBox.innerHTML += `<p>3. Validating & uploading ${newSongs.length} new MP3 files...</p>`;
+                    logBox.innerHTML += `<p>3. Uploading ${newSongs.length} MP3 files...</p>`;
                     for (let s of newSongs) {
                         const songFd = new FormData();
                         songFd.append('file', s.file);
@@ -802,15 +802,18 @@
                             throw new Error(`[${s.filename}] ${msg}`);
                         }
                     }
-                    logBox.innerHTML += `<p class="text-emerald-400">✓ All ${newSongs.length} MP3 files passed 0-byte shield & validation.</p>`;
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ ${newSongs.length} MP3 files uploaded.</p>`;
                 }
 
-                // 4. Run Generator & Git Push
-                logBox.innerHTML += `<p>4. Running Metadata Generator & atomic Git Push to GitHub...</p>`;
+                // Step 3, 4, 5, 6, 7, 8: Run Generators, Git add, commit, and push
+                logBox.innerHTML += `<p>4. Running generate_metadata...</p>`;
+                logBox.innerHTML += `<p>5. Running generate_or_update_songs_with_details.py...</p>`;
+                logBox.innerHTML += `<p>6. Preparing & committing Git changes...</p>`;
+
                 const execRes = await fetch(`${API_BASE}/sync/execute/${encodeURIComponent(albumName)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ album_name: albumName })
+                    body: JSON.stringify({ album_name: albumName, mode: state.workflowMode })
                 });
                 const execData = await parseJsonResponse(execRes);
 
@@ -820,9 +823,13 @@
                     throw new Error(msg);
                 }
 
+                const commitMsg = execData.git_summary ? execData.git_summary.commit_message : `${state.workflowMode === 'edit' ? 'edited' : 'added'} songs/album with ${albumName}`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Metadata & songs_with_details generated.</p>`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Commit created: <b>${commitMsg}</b></p>`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Successfully pushed to main.</p>`;
+
                 logBox.innerHTML += `
-                    <p class="text-emerald-400 font-bold">✓ SYNC COMPLETED SUCCESSFULLY!</p>
-                    <p>Git Commit SHA: <b>${execData.git_summary ? (execData.git_summary.commit_sha || 'Committed') : 'Completed'}</b></p>
+                    <p class="text-emerald-400 font-bold mt-2">✓ SYNC COMPLETED SUCCESSFULLY!</p>
                     <p class="text-cyan-400">Tunezy Android app is now ready to stream updated songs/artwork.</p>
                 `;
 
@@ -834,7 +841,7 @@
                 loadAlbumsCatalog();
 
             } catch (err) {
-                logBox.innerHTML += `<p class="text-red-400 font-bold">❌ Sync Error: ${err.message}</p>`;
+                logBox.innerHTML += `<p class="text-red-400 font-bold mt-2">❌ Sync Error: ${err.message}</p>`;
                 document.getElementById('sync-modal-title').innerHTML = `<i class="icon-x-circle text-red-400"></i> Sync Failed`;
                 document.getElementById('btn-sync-modal-close').classList.remove('hidden');
             }

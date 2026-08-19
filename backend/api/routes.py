@@ -29,7 +29,7 @@ def get_repo_context() -> RepositoryContext:
     if is_cloud_mode():
         raise HTTPException(
             status_code=400,
-            detail="Local agent repository operations are disabled in Cloud Mode. Please use Cloud Jobs API (/api/jobs/sync)."
+            detail="Local agent repository operations are disabled in Cloud Mode. Please use Cloud Sync API (/api/sync/execute)."
         )
     return RepositoryContext()
 
@@ -70,13 +70,14 @@ class RenameSongRequest(BaseModel):
 
 class SyncExecuteRequest(BaseModel):
     album_name: str
+    mode: Optional[str] = "add"
     custom_commit_message: Optional[str] = None
     force_continue_on_warning: bool = False
 
 def check_token(x_api_token: Optional[str] = Header(None)):
     required_token = os.environ.get("AGENT_AUTH_TOKEN")
     if required_token and x_api_token != required_token:
-        raise HTTPException(status_code=401, detail="Unauthorized Local Agent API call.")
+        raise HTTPException(status_code=401, detail="Unauthorized API call.")
 
 @router.get("/health")
 def get_health():
@@ -290,12 +291,13 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
     rc = get_repo_context()
     ms = get_metadata_service(rc)
     try:
-        album_name = rc.sanitize_name(req.album_name.strip())
+        album_name = req.album_name.strip()
         album_dir = rc.get_album_path(album_name)
     except PathTraversalError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     already_exists = album_dir.exists()
+    album_dir.mkdir(parents=True, exist_ok=True)
     ms.save_album_info(album_name, req.dict())
     existing_info = ms.load_album_info(album_name)
 
@@ -304,7 +306,7 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
         "already_exists": already_exists,
         "album_name": album_name,
         "metadata": existing_info,
-        "message": f"Album '{album_name}' selected. Would you like to add more songs?" if already_exists else f"Album '{album_name}' initialized."
+        "message": f"Album '{album_name}' selected." if already_exists else f"Album '{album_name}' initialized."
     }
 
 @router.post("/upload/artwork/{album_name}")
@@ -323,11 +325,17 @@ async def upload_artwork(album_name: str, file: UploadFile = File(...), _auth=De
         )
 
     if is_cloud_mode():
+        staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging" / album_name
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        target_png = staging_dir / f"{album_name}.png"
+        with open(target_png, "wb") as f:
+            f.write(png_bytes)
+
         return {
             "success": True,
             "album_name": album_name,
             "saved_filename": f"{album_name}.png",
-            "saved_path": f".staging/{album_name}.png",
+            "saved_path": str(target_png),
             "image_url": None
         }
 
@@ -358,17 +366,21 @@ async def upload_song(
     _auth=Depends(check_token)
 ):
     if is_cloud_mode():
-        staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging"
+        staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging" / album_name
         staging_dir.mkdir(parents=True, exist_ok=True)
-        staging_file = staging_dir / f"_temp_{file.filename}"
-        with open(staging_file, "wb") as f:
+        
+        final_stem = desired_song_name.strip() if desired_song_name and desired_song_name.strip() else Path(file.filename).stem
+        final_filename = f"{final_stem}.mp3"
+        target_mp3 = staging_dir / final_filename
+
+        with open(target_mp3, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
         try:
-            audio_specs = validation_service.validate_mp3_file(staging_file)
+            audio_specs = validation_service.validate_mp3_file(target_mp3)
         except FileValidationError as e:
-            if staging_file.exists():
-                staging_file.unlink()
+            if target_mp3.exists():
+                target_mp3.unlink()
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -377,27 +389,12 @@ async def upload_song(
                     "message": f"MP3 validation failed for file '{file.filename}': {str(e)}"
                 }
             )
-        except Exception as e:
-            if staging_file.exists():
-                staging_file.unlink()
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "MP3_PROCESSING_ERROR",
-                    "file": file.filename,
-                    "message": f"Failed to process MP3 stream for '{file.filename}': {str(e)}"
-                }
-            )
 
-        if staging_file.exists():
-            staging_file.unlink()
-
-        final_stem = desired_song_name.strip() if desired_song_name and desired_song_name.strip() else Path(file.filename).stem
         return {
             "success": True,
             "album_name": album_name,
             "original_filename": file.filename,
-            "final_filename": f"{final_stem}.mp3",
+            "final_filename": final_filename,
             "song_title": final_stem,
             "song_id": f"cloud_{final_stem}",
             "audio_specs": audio_specs,
@@ -460,113 +457,58 @@ async def upload_song(
         "duplicate_analysis": dup_analysis
     }
 
-@router.post("/songs/rename")
-def rename_existing_song(req: RenameSongRequest, _auth=Depends(check_token)):
-    rc = get_repo_context()
-    try:
-        album_name = rc.sanitize_name(req.album_name)
-        old_filename = rc.sanitize_name(req.old_filename)
-        new_stem = rc.sanitize_name(req.new_song_title)
-
-        old_path = rc.get_song_path(album_name, old_filename)
-        new_filename = f"{new_stem}.mp3"
-        new_path = rc.get_song_path(album_name, new_filename)
-    except PathTraversalError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if not old_path.exists():
-        raise HTTPException(status_code=404, detail=f"Existing song file '{old_filename}' not found.")
-
-    old_song_id = rc.get_stable_id(f"{album_name}{old_filename}")
-    new_song_id = rc.get_stable_id(f"{album_name}{new_filename}")
-
-    if not req.confirm_id_impact:
-        return {
-            "requires_confirmation": True,
-            "warning": f"Renaming '{old_filename}' to '{new_filename}' changes its Song ID from '{old_song_id}' to '{new_song_id}' and alters its Raw GitHub URL.",
-            "old_song_id": old_song_id,
-            "new_song_id": new_song_id,
-            "old_filename": old_filename,
-            "new_filename": new_filename
-        }
-
-    shutil.move(str(old_path), str(new_path))
-
-    return {
-        "success": True,
-        "album_name": album_name,
-        "old_filename": old_filename,
-        "new_filename": new_filename,
-        "old_song_id": old_song_id,
-        "new_song_id": new_song_id,
-        "message": f"Successfully renamed song to '{new_filename}'."
-    }
-
-@router.post("/sync/preview/{album_name}")
-def sync_preview(album_name: str):
-    rc = get_repo_context()
-    ms = get_metadata_service(rc)
-    gs = get_git_service(rc)
-    try:
-        album_dir = rc.get_album_path(album_name)
-    except PathTraversalError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if not album_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Album '{album_name}' does not exist.")
-
-    info = ms.load_album_info(album_name)
-    has_artwork = (album_dir / f"{album_name}.png").exists()
-    mp3_files = sorted(list(album_dir.glob("*.mp3")))
-
-    songs_preview = []
-    for mp3 in mp3_files:
-        st = mp3.stat()
-        songs_preview.append({
-            "title": mp3.stem,
-            "filename": mp3.name,
-            "song_id": rc.get_stable_id(f"{album_name}{mp3.name}"),
-            "size": st.st_size
-        })
-
-    return {
-        "album_name": album_name,
-        "metadata": info,
-        "has_artwork": has_artwork,
-        "total_songs": len(songs_preview),
-        "songs": songs_preview,
-        "git_status": gs.get_git_status()
-    }
-
 @router.post("/sync/execute/{album_name}")
 def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
+    album_name = req.album_name.strip()
+    mode = req.mode or "add"
+
     if is_cloud_mode():
-        album_name = req.album_name.strip()
         job_id = f"job_cloud_sync_{int(time.time() * 1000)}"
+        staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging" / album_name
         try:
+            # Provision blobless workspace
             cloud_repo = CloudRepository(job_id=job_id)
             workspace_dir = cloud_repo.provision_blobless_workspace()
             
-            gen_svc = GeneratorService(RepositoryContext(override_root=cloud_repo.root))
+            # Copy staged files into blobless workspace album directory
+            target_album_dir = cloud_repo.root / album_name
+            target_album_dir.mkdir(parents=True, exist_ok=True)
+
+            if staging_dir.exists():
+                for item in staging_dir.iterdir():
+                    if item.is_file():
+                        shutil.copy2(str(item), str(target_album_dir / item.name))
+
+            # Step 3 & 4: Run Authoritative Generator #1 and Generator #2
+            gen_svc = GeneratorService(cloud_repo)
             gen_result = gen_svc.run_generator_pipeline()
 
-            git_svc = GitSyncService(RepositoryContext(override_root=cloud_repo.root))
+            # Step 6, 7 & 8: Git add, commit, and push
+            git_svc = GitSyncService(cloud_repo)
             git_result = git_svc.stage_commit_and_push(
                 album_name=album_name,
-                custom_commit_msg=req.custom_commit_message
+                mode=mode,
+                custom_commit_msg=req.custom_commit_message,
+                push_enabled=True
             )
 
+            # Cleanup staging & workspace
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
             cloud_repo.cleanup_workspace()
 
             return {
                 "success": True,
                 "status": "COMPLETED",
                 "album_name": album_name,
+                "mode": mode,
                 "generator_summary": gen_result,
                 "git_summary": git_result,
                 "tunezy_ready": True
             }
         except Exception as e:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -579,7 +521,6 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
     gen_svc = get_generator_service(rc)
     git_svc = get_git_service(rc)
     try:
-        album_name = rc.sanitize_name(req.album_name)
         album_dir = rc.get_album_path(album_name)
     except PathTraversalError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -587,15 +528,19 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
     if not album_dir.exists():
         raise HTTPException(status_code=404, detail=f"Album '{album_name}' does not exist.")
 
+    # Step 3 & 4: Run Authoritative Generator #1 and Generator #2
     try:
         gen_result = gen_svc.run_generator_pipeline()
     except GeneratorValidationError as e:
         raise HTTPException(status_code=400, detail=f"Metadata Generation Failed: {e}")
 
+    # Step 6, 7 & 8: Git add, commit, and push
     try:
         git_result = git_svc.stage_commit_and_push(
             album_name=album_name,
-            custom_commit_msg=req.custom_commit_message
+            mode=mode,
+            custom_commit_msg=req.custom_commit_message,
+            push_enabled=True
         )
     except GitSyncError as e:
         raise HTTPException(status_code=500, detail=f"Git Synchronization Failed: {e}")
@@ -604,6 +549,7 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
         "success": True,
         "status": "COMPLETED",
         "album_name": album_name,
+        "mode": mode,
         "generator_summary": gen_result,
         "git_summary": git_result,
         "tunezy_ready": True
