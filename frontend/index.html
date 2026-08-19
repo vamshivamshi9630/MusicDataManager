@@ -38,7 +38,7 @@
                     <h1 class="font-bold text-lg leading-tight tracking-wide text-white">MusicData Manager</h1>
                     <p class="text-xs text-slate-400 flex items-center gap-1.5">
                         <span id="repo-status-badge" class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-                        <span id="repo-branch-info">Checking Git...</span>
+                        <span id="repo-branch-info">Checking Mode...</span>
                     </p>
                 </div>
             </div>
@@ -74,107 +74,156 @@
         <!-- Workflow Step Tabs -->
         <div class="glass-panel p-1.5 rounded-xl flex space-x-1">
             <button id="tab-btn-add" onclick="switchTab('add')" class="flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center bg-brand-600 text-white shadow">
-                <i class="icon-plus-circle inline mr-1 text-sm"></i> Add / Edit Album
+                <i class="icon-plus-circle inline mr-1 text-sm"></i> Album Management
             </button>
             <button id="tab-btn-browse" onclick="switchTab('browse')" class="flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center text-slate-400 hover:text-white">
                 <i class="icon-folder inline mr-1 text-sm"></i> Browse Repository
             </button>
         </div>
 
-        <!-- TAB 1: ADD / EDIT ALBUM WORKFLOW -->
+        <!-- TAB 1: ALBUM MANAGEMENT WORKFLOW (ADD vs EDIT) -->
         <div id="tab-content-add" class="space-y-6">
 
-            <!-- Step 1: Album Details & Director Autocomplete -->
-            <div class="glass-panel p-5 rounded-2xl space-y-4">
-                <h2 class="text-base font-semibold text-white flex items-center gap-2">
-                    <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">1</span>
-                    Album Identity & Metadata
-                </h2>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs text-slate-400 mb-1.5">Album Name</label>
-                        <input type="text" id="input-album-name" oninput="onAlbumNameChanged()" placeholder="e.g. Pushpa2" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
-                        <p id="album-exists-badge" class="hidden text-xs text-amber-400 mt-1 flex items-center gap-1">
-                            <i class="icon-alert-triangle text-xs"></i> Album already exists in repository!
-                        </p>
+            <!-- Mode Selection Cards (ADD vs EDIT) -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="album-mode-selector">
+                <button type="button" onclick="setAlbumWorkflowMode('add')" id="mode-btn-add" class="glass-panel p-5 rounded-2xl text-left border-2 transition border-brand-500 bg-brand-600/10">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center text-white font-bold text-lg">
+                            <i class="icon-plus-circle"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-base text-white">ADD ALBUM</h3>
+                            <p class="text-xs text-slate-400">Create a new album / movie catalog entry</p>
+                        </div>
                     </div>
-
-                    <div class="relative">
-                        <label class="block text-xs text-slate-400 mb-1.5">Music Director</label>
-                        <input type="text" id="input-music-director" oninput="onDirectorInput(this.value)" placeholder="Type to search e.g. Devi Sri Prasad" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
-                        <div id="director-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-20 max-h-48 overflow-y-auto"></div>
-                    </div>
-
-                    <div>
-                        <label class="block text-xs text-slate-400 mb-1.5">Release Year</label>
-                        <input type="number" id="input-year" value="2024" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
-                    </div>
-
-                    <div>
-                        <label class="block text-xs text-slate-400 mb-1.5">Release Date (YYYY-MM-DD)</label>
-                        <input type="text" id="input-release-date" placeholder="2024-12-05" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Step 2: PNG Artwork Upload -->
-            <div class="glass-panel p-5 rounded-2xl space-y-4">
-                <h2 class="text-base font-semibold text-white flex items-center gap-2">
-                    <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">2</span>
-                    Album Artwork (Strict PNG Only)
-                </h2>
-
-                <div class="flex flex-col sm:flex-row items-center gap-4">
-                    <div id="artwork-preview-box" class="w-28 h-28 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-slate-500 overflow-hidden relative group">
-                        <i class="icon-image text-3xl" id="artwork-placeholder-icon"></i>
-                        <img id="artwork-img-element" class="hidden w-full h-full object-cover">
-                    </div>
-
-                    <div class="flex-1 w-full space-y-2">
-                        <input type="file" id="input-artwork-file" accept="image/png" onchange="onArtworkSelected(this)" class="hidden">
-                        <button type="button" onclick="document.getElementById('input-artwork-file').click()" class="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl text-sm font-medium text-white transition flex items-center justify-center gap-2">
-                            <i class="icon-upload text-sm"></i> Select PNG Artwork
-                        </button>
-                        <p class="text-xs text-slate-400">File will automatically be saved as <code id="auto-png-name" class="text-brand-400 font-mono">&lt;AlbumName&gt;.png</code></p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Step 3: MP3 Song Uploads & Renaming -->
-            <div class="glass-panel p-5 rounded-2xl space-y-4">
-                <div class="flex items-center justify-between">
-                    <h2 class="text-base font-semibold text-white flex items-center gap-2">
-                        <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">3</span>
-                        Audio Files (MP3 Only)
-                    </h2>
-                    <button type="button" onclick="document.getElementById('input-songs-files').click()" class="px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 rounded-lg text-xs font-semibold text-white transition">
-                        + Add MP3s
-                    </button>
-                    <input type="file" id="input-songs-files" accept="audio/mp3,.mp3" multiple onchange="onSongsSelected(this)" class="hidden">
-                </div>
-
-                <!-- Song Upload List -->
-                <div id="songs-list-container" class="space-y-2">
-                    <div class="p-6 text-center text-slate-500 border-2 border-dashed border-slate-800 rounded-xl">
-                        <i class="icon-music text-2xl mb-1 block"></i>
-                        <p class="text-xs">No MP3 songs selected yet. Click "+ Add MP3s" to select files.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Step 4: Preview & Atomic Sync Action -->
-            <div class="glass-panel p-5 rounded-2xl space-y-4">
-                <button type="button" onclick="triggerAtomicSync()" id="btn-sync-submit" class="w-full py-3.5 bg-brand-600 hover:bg-brand-500 active:bg-brand-700 text-white font-bold rounded-xl shadow-lg shadow-brand-600/30 text-base transition flex items-center justify-center gap-2">
-                    <i class="icon-git-commit text-lg"></i> Confirm & Sync to GitHub
                 </button>
+
+                <button type="button" onclick="setAlbumWorkflowMode('edit')" id="mode-btn-edit" class="glass-panel p-5 rounded-2xl text-left border-2 transition border-slate-800 hover:border-slate-700">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-cyan-400 font-bold text-lg">
+                            <i class="icon-edit-3"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-base text-white">EDIT ALBUM</h3>
+                            <p class="text-xs text-slate-400">Modify an existing album metadata or songs</p>
+                        </div>
+                    </div>
+                </button>
+            </div>
+
+            <!-- Search Existing Album UI (For Edit Mode) -->
+            <div id="edit-album-search-container" class="hidden glass-panel p-5 rounded-2xl space-y-3">
+                <label class="block text-xs font-semibold text-cyan-400 uppercase tracking-wide flex items-center gap-1.5">
+                    <i class="icon-search text-xs"></i> Search Existing Album to Edit
+                </label>
+                <div class="relative">
+                    <input type="text" id="input-edit-search" oninput="onEditSearchInput(this.value)" placeholder="Type existing album name e.g. Pushpa 2..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
+                    <div id="edit-album-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-30 max-h-56 overflow-y-auto"></div>
+                </div>
+            </div>
+
+            <!-- Main Form Section (Contains Album Form) -->
+            <div id="album-form-section" class="space-y-6">
+
+                <!-- Step 1: Album Details & Director Autocomplete -->
+                <div class="glass-panel p-5 rounded-2xl space-y-4">
+                    <h2 class="text-base font-semibold text-white flex items-center justify-between">
+                        <span class="flex items-center gap-2">
+                            <span id="step-1-badge" class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">1</span>
+                            <span id="form-mode-title">Album Identity & Metadata</span>
+                        </span>
+                        <span id="editing-album-tag" class="hidden px-3 py-1 rounded-full bg-cyan-950 text-cyan-400 border border-cyan-800 text-xs font-mono font-semibold"></span>
+                    </h2>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs text-slate-400 mb-1.5">Album Name</label>
+                            <input type="text" id="input-album-name" oninput="onAlbumNameChanged()" placeholder="e.g. Pushpa 2 The Rule" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                            <p id="album-exists-badge" class="hidden text-xs text-amber-400 mt-1 flex items-center gap-1">
+                                <i class="icon-alert-triangle text-xs"></i> <span id="album-exists-msg">Album already exists in repository!</span>
+                            </p>
+                        </div>
+
+                        <div class="relative">
+                            <label class="block text-xs text-slate-400 mb-1.5">Music Director</label>
+                            <input type="text" id="input-music-director" oninput="onDirectorInput(this.value)" placeholder="Type to search e.g. Devi Sri Prasad" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                            <div id="director-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-20 max-h-48 overflow-y-auto"></div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-400 mb-1.5">Release Year</label>
+                            <input type="number" id="input-year" value="2026" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-400 mb-1.5">Release Date (YYYY-MM-DD)</label>
+                            <input type="text" id="input-release-date" placeholder="2026-12-05" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: PNG Artwork Upload -->
+                <div class="glass-panel p-5 rounded-2xl space-y-4">
+                    <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">2</span>
+                        Album Artwork (Strict PNG Only)
+                    </h2>
+
+                    <div class="flex flex-col sm:flex-row items-center gap-4">
+                        <div id="artwork-preview-box" class="w-28 h-28 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-slate-500 overflow-hidden relative group">
+                            <i class="icon-image text-3xl" id="artwork-placeholder-icon"></i>
+                            <img id="artwork-img-element" class="hidden w-full h-full object-cover">
+                        </div>
+
+                        <div class="flex-1 w-full space-y-2">
+                            <input type="file" id="input-artwork-file" accept="image/png" onchange="onArtworkSelected(this)" class="hidden">
+                            <button type="button" onclick="document.getElementById('input-artwork-file').click()" class="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl text-sm font-medium text-white transition flex items-center justify-center gap-2">
+                                <i class="icon-upload text-sm"></i> Select / Replace PNG Artwork
+                            </button>
+                            <p class="text-xs text-slate-400">Artwork must be strictly PNG and will automatically be saved as <code id="auto-png-name" class="text-brand-400 font-mono">&lt;AlbumName&gt;.png</code></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3: MP3 Song Uploads & Renaming -->
+                <div class="glass-panel p-5 rounded-2xl space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                            <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">3</span>
+                            Audio Files (MP3 Only)
+                        </h2>
+                        <button type="button" onclick="document.getElementById('input-songs-files').click()" class="px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 rounded-lg text-xs font-semibold text-white transition">
+                            + Add MP3s
+                        </button>
+                        <input type="file" id="input-songs-files" accept="audio/mp3,.mp3" multiple onchange="onSongsSelected(this)" class="hidden">
+                    </div>
+
+                    <!-- Song Upload List -->
+                    <div id="songs-list-container" class="space-y-2">
+                        <div class="p-6 text-center text-slate-500 border-2 border-dashed border-slate-800 rounded-xl">
+                            <i class="icon-music text-2xl mb-1 block"></i>
+                            <p class="text-xs">No MP3 songs selected yet. Click "+ Add MP3s" to select files.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 4: Preview & Atomic Sync Action -->
+                <div class="glass-panel p-5 rounded-2xl space-y-4">
+                    <button type="button" onclick="triggerAtomicSync()" id="btn-sync-submit" class="w-full py-3.5 bg-brand-600 hover:bg-brand-500 active:bg-brand-700 text-white font-bold rounded-xl shadow-lg shadow-brand-600/30 text-base transition flex items-center justify-center gap-2">
+                        <i class="icon-git-commit text-lg"></i> Confirm & Sync to GitHub
+                    </button>
+                    <p id="duplicate-blocked-msg" class="hidden text-xs text-center text-red-400 font-semibold">
+                        ⚠️ Duplicate album creation blocked. Switch to EDIT ALBUM mode to modify an existing album.
+                    </p>
+                </div>
+
             </div>
 
         </div>
 
         <!-- TAB 2: BROWSE REPOSITORY -->
         <div id="tab-content-browse" class="hidden space-y-4">
-            <div class="glass-panel p-4 rounded-2xl">
+            <div class="glass-panel p-4 rounded-2xl flex items-center justify-between gap-3">
                 <input type="text" id="input-repo-search" oninput="filterBrowseAlbums(this.value)" placeholder="Search 658+ albums by name or music director..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
             </div>
 
@@ -209,6 +258,8 @@
         const API_BASE = "/api";
         let state = {
             albums: [],
+            workflowMode: "add", // "add" or "edit"
+            originalAlbumName: "",
             selectedAlbum: "",
             artworkFile: null,
             songs: []
@@ -217,6 +268,7 @@
         document.addEventListener("DOMContentLoaded", () => {
             refreshRepoStatus();
             loadAlbumsCatalog();
+            setAlbumWorkflowMode("add");
         });
 
         async function refreshRepoStatus() {
@@ -255,6 +307,130 @@
             }
         }
 
+        function setAlbumWorkflowMode(mode) {
+            state.workflowMode = mode;
+            const btnAdd = document.getElementById('mode-btn-add');
+            const btnEdit = document.getElementById('mode-btn-edit');
+            const searchContainer = document.getElementById('edit-album-search-container');
+            const formSection = document.getElementById('album-form-section');
+            const titleElement = document.getElementById('form-mode-title');
+            const editingTag = document.getElementById('editing-album-tag');
+
+            if (mode === 'add') {
+                btnAdd.className = "glass-panel p-5 rounded-2xl text-left border-2 transition border-brand-500 bg-brand-600/10";
+                btnEdit.className = "glass-panel p-5 rounded-2xl text-left border-2 transition border-slate-800 hover:border-slate-700";
+                searchContainer.classList.add('hidden');
+                formSection.classList.remove('hidden');
+                titleElement.innerText = "Add New Album Identity";
+                editingTag.classList.add('hidden');
+
+                // Reset form for fresh addition
+                resetAlbumForm();
+            } else {
+                btnEdit.className = "glass-panel p-5 rounded-2xl text-left border-2 transition border-cyan-500 bg-cyan-600/10";
+                btnAdd.className = "glass-panel p-5 rounded-2xl text-left border-2 transition border-slate-800 hover:border-slate-700";
+                searchContainer.classList.remove('hidden');
+                titleElement.innerText = "Edit Album Metadata & Songs";
+                
+                if (!state.originalAlbumName) {
+                    formSection.classList.add('hidden');
+                } else {
+                    formSection.classList.remove('hidden');
+                }
+            }
+        }
+
+        function resetAlbumForm() {
+            state.originalAlbumName = "";
+            state.selectedAlbum = "";
+            state.artworkFile = null;
+            state.songs = [];
+
+            document.getElementById('input-album-name').value = "";
+            document.getElementById('input-music-director').value = "";
+            document.getElementById('input-year').value = "2026";
+            document.getElementById('input-release-date').value = "";
+            document.getElementById('artwork-placeholder-icon').classList.remove('hidden');
+            document.getElementById('artwork-img-element').classList.add('hidden');
+            document.getElementById('artwork-img-element').src = "";
+            document.getElementById('auto-png-name').innerText = "<AlbumName>.png";
+            document.getElementById('album-exists-badge').classList.add('hidden');
+            document.getElementById('duplicate-blocked-msg').classList.add('hidden');
+            document.getElementById('btn-sync-submit').disabled = false;
+            document.getElementById('btn-sync-submit').classList.remove('opacity-50', 'cursor-not-allowed');
+
+            renderSongsList();
+        }
+
+        function onEditSearchInput(val) {
+            const sugBox = document.getElementById('edit-album-suggestions');
+            if (!val.trim()) {
+                sugBox.classList.add('hidden');
+                return;
+            }
+            const q = val.trim().lowerCase();
+            const matches = state.albums.filter(a => a.name && a.name.toLowerCase().includes(q)).slice(0, 10);
+            if (matches.length > 0) {
+                sugBox.innerHTML = matches.map(a => `
+                    <div onclick="selectAlbumForEditing('${a.name.replace(/'/g, "\\'")}')" class="px-4 py-3 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0 flex items-center justify-between">
+                        <div>
+                            <p class="font-semibold">${a.name}</p>
+                            <p class="text-xs text-slate-400">${a.musicDirector} • ${a.year}</p>
+                        </div>
+                        <span class="text-xs text-cyan-400 font-mono">${a.songCount} songs</span>
+                    </div>
+                `).join('');
+                sugBox.classList.remove('hidden');
+            } else {
+                sugBox.classList.add('hidden');
+            }
+        }
+
+        async function selectAlbumForEditing(albumName) {
+            document.getElementById('edit-album-suggestions').classList.add('hidden');
+            document.getElementById('input-edit-search').value = albumName;
+            
+            state.originalAlbumName = albumName;
+            state.selectedAlbum = albumName;
+
+            const editingTag = document.getElementById('editing-album-tag');
+            editingTag.innerText = `Editing: ${albumName}`;
+            editingTag.classList.remove('hidden');
+
+            document.getElementById('album-form-section').classList.remove('hidden');
+
+            try {
+                const res = await fetch(`${API_BASE}/albums/${encodeURIComponent(albumName)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('input-album-name').value = data.album_name || albumName;
+                    document.getElementById('input-music-director').value = data.metadata.musicDirector || '';
+                    document.getElementById('input-year').value = data.metadata.year || 2026;
+                    document.getElementById('input-release-date').value = data.metadata.releaseDate || '';
+                    document.getElementById('auto-png-name').innerText = `${data.album_name || albumName}.png`;
+
+                    if (data.has_artwork && data.artwork_url) {
+                        document.getElementById('artwork-placeholder-icon').classList.add('hidden');
+                        const img = document.getElementById('artwork-img-element');
+                        img.src = data.artwork_url;
+                        img.classList.remove('hidden');
+                    }
+
+                    if (data.songs && data.songs.length > 0) {
+                        state.songs = data.songs.map(s => ({
+                            file: null,
+                            filename: s.filename,
+                            desiredName: s.title,
+                            isExisting: true
+                        }));
+                        renderSongsList();
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to load album details:", e);
+            }
+        }
+
         function switchTab(tab) {
             document.getElementById('tab-content-add').classList.toggle('hidden', tab !== 'add');
             document.getElementById('tab-content-browse').classList.toggle('hidden', tab !== 'browse');
@@ -273,12 +449,24 @@
             state.selectedAlbum = val;
             document.getElementById('auto-png-name').innerText = val ? `${val}.png` : '<AlbumName>.png';
 
-            const match = state.albums.find(a => a.name.lower === val.toLowerCase());
-            document.getElementById('album-exists-badge').classList.toggle('hidden', !match);
+            if (state.workflowMode === 'add') {
+                const match = state.albums.find(a => a.name && a.name.toLowerCase() === val.toLowerCase());
+                const badge = document.getElementById('album-exists-badge');
+                const btnSubmit = document.getElementById('btn-sync-submit');
+                const blockedMsg = document.getElementById('duplicate-blocked-msg');
 
-            if (match) {
-                document.getElementById('input-music-director').value = match.musicDirector || '';
-                document.getElementById('input-year').value = match.year || 2024;
+                if (match) {
+                    document.getElementById('album-exists-msg').innerText = "Album already exists. Please use EDIT ALBUM mode to modify it.";
+                    badge.classList.remove('hidden');
+                    blockedMsg.classList.remove('hidden');
+                    btnSubmit.disabled = true;
+                    btnSubmit.classList.add('opacity-50', 'cursor-not-allowed');
+                } else {
+                    badge.classList.add('hidden');
+                    blockedMsg.classList.add('hidden');
+                    btnSubmit.disabled = false;
+                    btnSubmit.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
             }
         }
 
@@ -293,7 +481,7 @@
                 const data = await res.json();
                 if (data.suggestions && data.suggestions.length > 0) {
                     sugBox.innerHTML = data.suggestions.map(s => 
-                        `<div onclick="selectDirector('${s}')" class="px-3.5 py-2 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0">${s}</div>`
+                        `<div onclick="selectDirector('${s.replace(/'/g, "\\'")}')" class="px-3.5 py-2 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0">${s}</div>`
                     ).join('');
                     sugBox.classList.remove('hidden');
                 } else {
@@ -334,7 +522,9 @@
                 if (f.name.toLowerCase().endsWith('.mp3')) {
                     state.songs.push({
                         file: f,
-                        desiredName: f.name.replace(/\.mp3$/i, '')
+                        filename: f.name,
+                        desiredName: f.name.replace(/\.mp3$/i, ''),
+                        isExisting: false
                     });
                 }
             }
@@ -355,10 +545,13 @@
             container.innerHTML = state.songs.map((s, idx) => `
                 <div class="p-3.5 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div class="flex-1">
-                        <p class="text-xs text-slate-400 font-mono">Original: ${s.file.name}</p>
-                        <input type="text" value="${s.desiredName}" oninput="updateSongName(${idx}, this.value)" placeholder="Song Name" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-mono text-slate-400">File: ${s.filename}</span>
+                            ${s.isExisting ? '<span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-cyan-400 border border-slate-700">Existing</span>' : '<span class="px-2 py-0.5 rounded text-[10px] bg-brand-900 text-brand-400 border border-brand-800">New MP3</span>'}
+                        </div>
+                        <input type="text" value="${s.desiredName}" oninput="updateSongName(${idx}, this.value)" placeholder="Song Title" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500">
                     </div>
-                    <button type="button" onclick="removeSong(${idx})" class="text-red-400 hover:text-red-300 text-xs flex items-center gap-1 self-end sm:self-center">
+                    <button type="button" onclick="confirmRemoveSong(${idx})" class="text-red-400 hover:text-red-300 text-xs flex items-center gap-1 self-end sm:self-center">
                         <i class="icon-trash text-xs"></i> Remove
                     </button>
                 </div>
@@ -371,7 +564,13 @@
             }
         }
 
-        function removeSong(idx) {
+        function confirmRemoveSong(idx) {
+            const song = state.songs[idx];
+            if (song && song.isExisting) {
+                if (!confirm(`Are you sure you want to remove existing song "${song.desiredName}" from this album?`)) {
+                    return;
+                }
+            }
             state.songs.splice(idx, 1);
             renderSongsList();
         }
@@ -384,14 +583,23 @@
             }
 
             grid.innerHTML = albums.slice(0, 40).map(a => `
-                <div class="p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between hover:border-slate-700 transition">
+                <div onclick="openAlbumFromBrowse('${a.name.replace(/'/g, "\\'")}')" class="p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between hover:border-cyan-500 transition cursor-pointer group">
                     <div>
-                        <h4 class="font-bold text-sm text-white">${a.name}</h4>
+                        <h4 class="font-bold text-sm text-white group-hover:text-cyan-400 transition">${a.name}</h4>
                         <p class="text-xs text-slate-400">${a.musicDirector} • ${a.year}</p>
                     </div>
-                    <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 text-emerald-400 border border-slate-700">${a.songCount} songs</span>
+                    <div class="flex items-center gap-2">
+                        <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 text-emerald-400 border border-slate-700">${a.songCount} songs</span>
+                        <i class="icon-chevron-right text-slate-500 text-sm group-hover:text-cyan-400"></i>
+                    </div>
                 </div>
             `).join('');
+        }
+
+        function openAlbumFromBrowse(albumName) {
+            switchTab('add');
+            setAlbumWorkflowMode('edit');
+            selectAlbumForEditing(albumName);
         }
 
         function filterBrowseAlbums(q) {
@@ -403,7 +611,7 @@
         async function triggerAtomicSync() {
             const albumName = document.getElementById('input-album-name').value.trim();
             const musicDirector = document.getElementById('input-music-director').value.trim();
-            const year = parseInt(document.getElementById('input-year').value) || 2024;
+            const year = parseInt(document.getElementById('input-year').value) || 2026;
             const releaseDate = document.getElementById('input-release-date').value.trim();
 
             if (!albumName) {
@@ -411,10 +619,18 @@
                 return;
             }
 
+            if (state.workflowMode === 'add') {
+                const match = state.albums.find(a => a.name && a.name.toLowerCase() === albumName.toLowerCase());
+                if (match) {
+                    alert('Album already exists. Please use EDIT ALBUM mode to modify existing albums.');
+                    return;
+                }
+            }
+
             const modal = document.getElementById('sync-modal');
             const logBox = document.getElementById('sync-modal-body');
             modal.classList.remove('hidden');
-            logBox.innerHTML = `<p>1. Initializing album identity: <b>${albumName}</b>...</p>`;
+            logBox.innerHTML = `<p>1. Initializing album identity: <b>${albumName}</b> (${state.workflowMode.toUpperCase()} mode)...</p>`;
 
             try {
                 // 1. Create / Select Album
@@ -444,13 +660,14 @@
                         const err = await artRes.json();
                         throw new Error(err.detail);
                     }
-                    logBox.innerHTML += `<p class="text-emerald-400">✓ Artwork validated & saved.</p>`;
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ Artwork validated & saved as ${albumName}.png.</p>`;
                 }
 
-                // 3. Upload Songs
-                if (state.songs.length > 0) {
-                    logBox.innerHTML += `<p>3. Validating & uploading ${state.songs.length} MP3 files...</p>`;
-                    for (let s of state.songs) {
+                // 3. Upload New Songs
+                const newSongs = state.songs.filter(s => !s.isExisting && s.file);
+                if (newSongs.length > 0) {
+                    logBox.innerHTML += `<p>3. Validating & uploading ${newSongs.length} new MP3 files...</p>`;
+                    for (let s of newSongs) {
                         const songFd = new FormData();
                         songFd.append('file', s.file);
                         songFd.append('desired_song_name', s.desiredName);
@@ -467,7 +684,7 @@
                 }
 
                 // 4. Run Generator & Git Push
-                logBox.innerHTML += `<p>4. Running v2 Metadata Generator & atomic Git Push to GitHub...</p>`;
+                logBox.innerHTML += `<p>4. Running Metadata Generator & atomic Git Push to GitHub...</p>`;
                 const execRes = await fetch(`${API_BASE}/sync/execute/${encodeURIComponent(albumName)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -482,7 +699,7 @@
                 const execData = await execRes.json();
                 logBox.innerHTML += `
                     <p class="text-emerald-400 font-bold">✓ SYNC COMPLETED SUCCESSFULLY!</p>
-                    <p>Git Commit SHA: <b>${execData.git_summary.commit_sha || 'Committed'}</b></p>
+                    <p>Git Commit SHA: <b>${execData.git_summary ? (execData.git_summary.commit_sha || 'Committed') : 'Completed'}</b></p>
                     <p class="text-cyan-400">Tunezy Android app is now ready to stream updated songs/artwork.</p>
                 `;
 
@@ -490,10 +707,9 @@
                 document.getElementById('btn-sync-modal-close').classList.remove('hidden');
 
                 // Reset inputs
-                state.songs = [];
-                state.artworkFile = null;
-                renderSongsList();
+                resetAlbumForm();
                 refreshRepoStatus();
+                loadAlbumsCatalog();
 
             } catch (err) {
                 logBox.innerHTML += `<p class="text-red-400 font-bold">❌ Error: ${err.message}</p>`;
