@@ -6,7 +6,13 @@ from backend.core.repository import IRepositoryProvider, LocalRepository, CloudR
 from backend.core.config import settings
 
 class GitSyncError(Exception):
-    pass
+    def __init__(self, message: str, stage: str = "git_sync", exit_code: int = 1, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.stage = stage
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
 
 class IGitSyncProvider(ABC):
     @abstractmethod
@@ -25,18 +31,37 @@ class BaseGitSyncService(IGitSyncProvider):
     def __init__(self, repo_context: IRepositoryProvider):
         self.repo = repo_context
 
-    def _run_git(self, args: list, check: bool = True) -> str:
+    def _run_git(self, args: list, check: bool = True, timeout: int = 35) -> str:
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
         try:
             res = subprocess.run(
                 ["git"] + args,
                 cwd=self.repo.root,
                 capture_output=True,
                 text=True,
+                env=env,
+                timeout=timeout,
                 check=check
             )
             return res.stdout.strip()
+        except subprocess.TimeoutExpired as e:
+            raise GitSyncError(
+                message=f"Git command 'git {' '.join(args)}' timed out after {timeout} seconds.",
+                stage="git_sync",
+                exit_code=124,
+                stdout=e.stdout if isinstance(e.stdout, str) else "",
+                stderr=e.stderr if isinstance(e.stderr, str) else ""
+            )
         except subprocess.CalledProcessError as e:
-            raise GitSyncError(f"Git command 'git {' '.join(args)}' failed: {e.stderr or e.stdout}")
+            err_msg = e.stderr or e.stdout or str(e)
+            raise GitSyncError(
+                message=f"Git command 'git {' '.join(args)}' failed (exit code {e.returncode}): {err_msg}",
+                stage="git_sync",
+                exit_code=e.returncode,
+                stdout=e.stdout or "",
+                stderr=e.stderr or ""
+            )
 
     def get_git_status(self) -> Dict[str, Any]:
         branch = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], check=False) or "main"
@@ -62,8 +87,8 @@ class BaseGitSyncService(IGitSyncProvider):
             return {"local_head": local_head, "remote_head": local_head, "in_sync": True}
 
         try:
-            self._run_git(["fetch", "origin", settings.GITHUB_BRANCH], check=False)
-            remote_head = self._run_git(["parse-remote", f"origin/{settings.GITHUB_BRANCH}"], check=False)[:12]
+            self._run_git(["fetch", "origin", settings.GITHUB_BRANCH], check=False, timeout=20)
+            remote_head = self._run_git(["rev-parse", f"origin/{settings.GITHUB_BRANCH}"], check=False)[:12]
             local_head = self._run_git(["rev-parse", "HEAD"], check=False)[:12]
             return {
                 "local_head": local_head,
@@ -74,9 +99,15 @@ class BaseGitSyncService(IGitSyncProvider):
             return {"error": str(e), "in_sync": False}
 
     def stage_commit_and_push(self, album_name: str, mode: str = "add", custom_commit_msg: str = "", push_enabled: bool = True) -> Dict[str, Any]:
-        # Exact commit message rule:
-        # ADD mode: "added songs/album with <Album Name>"
-        # EDIT mode: "edited songs/album with <Album Name>"
+        # Verify git worktree validity before committing
+        is_inside = self._run_git(["rev-parse", "--is-inside-work-tree"], check=False)
+        if is_inside != "true":
+            raise GitSyncError(
+                message=f"Workspace '{self.repo.root}' is not a valid Git repository worktree.",
+                stage="git_status",
+                exit_code=1
+            )
+
         if custom_commit_msg and custom_commit_msg.strip():
             msg = custom_commit_msg.strip()
         elif mode == "edit":
@@ -84,7 +115,7 @@ class BaseGitSyncService(IGitSyncProvider):
         else:
             msg = f"added songs/album with {album_name}"
 
-        # Stage all changes (album folder + PNG artwork + MP3s + generated metadata/indexes)
+        # Stage all intended album and metadata changes
         self._run_git(["add", "."])
         
         status_out = self._run_git(["status", "--porcelain"], check=False)
@@ -111,7 +142,12 @@ class BaseGitSyncService(IGitSyncProvider):
                 "message": "Git push disabled for safety."
             }
 
-        push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH])
+        # Push commit to origin main
+        try:
+            push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH], timeout=35)
+        except GitSyncError as e:
+            e.stage = "git_push"
+            raise e
 
         return {
             "committed": True,

@@ -214,7 +214,7 @@ class LocalRepository(IRepositoryProvider):
         safe_session = self.validate_safe_filename(session_id)
         safe_file = self.validate_safe_filename(filename)
         session_dir = self._staging_dir / safe_session
-        session_dir.mkdir(parents=True, exist_ok=True)
+        session_dir.mkdir(exist_ok=True)
         target = (session_dir / safe_file).resolve()
         try:
             target.relative_to(self._staging_dir.resolve())
@@ -241,7 +241,13 @@ class CloudRepository(IRepositoryProvider):
         self.workspace_dir = (self.base_temp_dir / self.job_id).resolve()
         self._staging_dir = (self.workspace_dir / ".staging").resolve()
         self._root = (self.workspace_dir / "MusicData").resolve()
-        self.remote_url = remote_url or f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
+        
+        # Build authenticated remote URL if token is available
+        auth_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN")
+        if auth_token and "x-access-token" not in (remote_url or ""):
+            self.remote_url = f"https://x-access-token:{auth_token}@github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
+        else:
+            self.remote_url = remote_url or f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
 
     def provision_blobless_workspace(self, source_repo_override: Optional[Path] = None) -> Path:
         if self.workspace_dir.exists():
@@ -260,10 +266,20 @@ class CloudRepository(IRepositoryProvider):
                 self.remote_url,
                 str(self._root)
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                raise CloudWorkspaceError(f"Blobless clone failed: {res.stderr or res.stdout}")
+            env = os.environ.copy()
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=35)
+                if res.returncode != 0:
+                    raise CloudWorkspaceError(f"Blobless clone failed (exit code {res.returncode}): {res.stderr or res.stdout}")
+            except subprocess.TimeoutExpired:
+                raise CloudWorkspaceError("Blobless clone timed out after 35 seconds.")
 
+        # Configure author identity for Cloud commit operations
+        subprocess.run(["git", "config", "user.name", "MusicData Manager Cloud"], cwd=self._root, check=False)
+        subprocess.run(["git", "config", "user.email", "cloud-agent@musicdata.internal"], cwd=self._root, check=False)
+
+        print(f"[CLOUD WORKSPACE] Provisioned blobless repository workspace at '{self._root}'")
         return self._root
 
     def cleanup_workspace(self) -> bool:
@@ -341,7 +357,7 @@ class CloudRepository(IRepositoryProvider):
         safe_session = self.validate_safe_filename(session_id)
         safe_file = self.validate_safe_filename(filename)
         session_dir = self._staging_dir / safe_session
-        session_dir.mkdir(parents=True, exist_ok=True)
+        session_dir.mkdir(exist_ok=True)
         target = (session_dir / safe_file).resolve()
         try:
             target.relative_to(self._staging_dir.resolve())
@@ -351,12 +367,9 @@ class CloudRepository(IRepositoryProvider):
 
     def list_all_album_directories(self) -> List[Path]:
         ignored = {".git", "generator", "metadata", "tmp", "__pycache__", ".idea", "MusicDirectorImages", "New_Icons", ".staging"}
-        if not self._root.exists():
-            return []
         return sorted([
             d for d in self._root.iterdir()
             if d.is_dir() and not d.name.startswith(".") and d.name not in ignored
         ], key=lambda d: d.name.lower())
-
 
 RepositoryContext = LocalRepository

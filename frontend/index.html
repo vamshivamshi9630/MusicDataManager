@@ -807,8 +807,6 @@
 
                 // Step 3, 4, 5, 6, 7, 8: Run Generators, Git add, commit, and push
                 logBox.innerHTML += `<p>4. Running generate_metadata...</p>`;
-                logBox.innerHTML += `<p>5. Running generate_or_update_songs_with_details.py...</p>`;
-                logBox.innerHTML += `<p>6. Preparing & committing Git changes...</p>`;
 
                 const execRes = await fetch(`${API_BASE}/sync/execute/${encodeURIComponent(albumName)}`, {
                     method: 'POST',
@@ -818,15 +816,26 @@
                 const execData = await parseJsonResponse(execRes);
 
                 if (!execRes.ok || execData.success === false) {
-                    const errObj = execData.error || execData.detail || execData;
-                    const msg = typeof errObj === 'object' ? (errObj.message || errObj.reason || JSON.stringify(errObj)) : String(errObj);
-                    throw new Error(msg);
+                    const stage = execData.stage || 'sync_execute';
+                    const errText = execData.error || execData.detail || 'Unknown sync error';
+                    logBox.innerHTML += `<p class="text-red-400 font-bold mt-1">❌ ${stage} failed: ${errText}</p>`;
+                    if (execData.stderr) {
+                        logBox.innerHTML += `<pre class="text-[10px] text-red-300 bg-slate-950 p-2 rounded mt-1 overflow-x-auto">${execData.stderr}</pre>`;
+                    }
+                    throw new Error(`[${stage}] ${errText}`);
                 }
 
+                logBox.innerHTML += `<p class="text-emerald-400">✓ generate_metadata completed successfully.</p>`;
+                logBox.innerHTML += `<p>5. Running generate_or_update_songs_with_details.py...</p>`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ songs_with_details generation completed successfully.</p>`;
+                logBox.innerHTML += `<p>6. Checking Git changes...</p>`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Git changes verified.</p>`;
+                logBox.innerHTML += `<p>7. Creating commit...</p>`;
+
                 const commitMsg = execData.git_summary ? execData.git_summary.commit_message : `${state.workflowMode === 'edit' ? 'edited' : 'added'} songs/album with ${albumName}`;
-                logBox.innerHTML += `<p class="text-emerald-400">✓ Metadata & songs_with_details generated.</p>`;
                 logBox.innerHTML += `<p class="text-emerald-400">✓ Commit created: <b>${commitMsg}</b></p>`;
-                logBox.innerHTML += `<p class="text-emerald-400">✓ Successfully pushed to main.</p>`;
+                logBox.innerHTML += `<p>8. Pushing to GitHub...</p>`;
+                logBox.innerHTML += `<p class="text-emerald-400">✓ Push completed.</p>`;
 
                 logBox.innerHTML += `
                     <p class="text-emerald-400 font-bold mt-2">✓ SYNC COMPLETED SUCCESSFULLY!</p>

@@ -14,7 +14,9 @@ from backend.api.routes import router as local_router
 from backend.api.auth_routes import router as auth_router
 from backend.api.cloud_routes import router as cloud_job_router, ws_router as cloud_ws_router
 from backend.services.validation import FileValidationError
-from backend.core.repository import PathTraversalError
+from backend.core.repository import PathTraversalError, CloudWorkspaceError
+from backend.services.generator import GeneratorValidationError
+from backend.services.git_sync import GitSyncError
 
 logger = logging.getLogger("musicdata")
 
@@ -39,16 +41,54 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     if isinstance(detail, dict):
         return JSONResponse(
             status_code=exc.status_code,
-            content={"success": False, "error": detail}
+            content={"success": False, "error": detail.get("message", str(detail)), **detail}
         )
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "success": False,
-            "error": {
-                "code": "HTTP_ERROR",
-                "message": str(detail)
-            }
+            "stage": "http_request",
+            "error": str(detail)
+        }
+    )
+
+@app.exception_handler(GeneratorValidationError)
+async def generator_validation_exception_handler(request: Request, exc: GeneratorValidationError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "success": False,
+            "stage": exc.stage,
+            "exit_code": exc.exit_code,
+            "error": exc.message,
+            "stdout": exc.stdout,
+            "stderr": exc.stderr
+        }
+    )
+
+@app.exception_handler(GitSyncError)
+async def git_sync_exception_handler(request: Request, exc: GitSyncError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "success": False,
+            "stage": getattr(exc, "stage", "git_sync"),
+            "exit_code": getattr(exc, "exit_code", 1),
+            "error": exc.message,
+            "stdout": getattr(exc, "stdout", ""),
+            "stderr": getattr(exc, "stderr", "")
+        }
+    )
+
+@app.exception_handler(CloudWorkspaceError)
+async def cloud_workspace_exception_handler(request: Request, exc: CloudWorkspaceError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "success": False,
+            "stage": "cloud_workspace",
+            "exit_code": 1,
+            "error": str(exc)
         }
     )
 
@@ -58,10 +98,8 @@ async def file_validation_exception_handler(request: Request, exc: FileValidatio
         status_code=status.HTTP_400_BAD_REQUEST,
         content={
             "success": False,
-            "error": {
-                "code": "VALIDATION_ERROR",
-                "message": str(exc)
-            }
+            "stage": "file_validation",
+            "error": str(exc)
         }
     )
 
@@ -71,10 +109,8 @@ async def path_traversal_exception_handler(request: Request, exc: PathTraversalE
         status_code=status.HTTP_400_BAD_REQUEST,
         content={
             "success": False,
-            "error": {
-                "code": "PATH_TRAVERSAL_ERROR",
-                "message": str(exc)
-            }
+            "stage": "security_check",
+            "error": str(exc)
         }
     )
 
@@ -87,10 +123,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "success": False,
-            "error": {
-                "code": "INTERNAL_SERVER_ERROR",
-                "message": f"Server processing failed: {str(exc)}"
-            }
+            "stage": "internal_server_error",
+            "error": f"Server processing failed: {str(exc)}"
         }
     )
 
