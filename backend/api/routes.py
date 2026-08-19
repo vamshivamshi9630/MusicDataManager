@@ -577,36 +577,51 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
 def sync_diagnostics(_auth=Depends(check_token)):
     """Return diagnostic info useful for debugging cloud git push and auth issues."""
     try:
-        # Use cloud repo context when in cloud mode, else local repo
         if is_cloud_mode():
-            rc = RepositoryContext()  # lightweight; don't perform repo operations
-            git_svc = GitSyncService(CloudRepository(job_id="diag_check"))
+            token_env = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN") or ""
+            if not token_env:
+                try:
+                    from backend.services.github_auth import GitHubTokenManager
+                    token_env = GitHubTokenManager().get_installation_access_token()
+                except Exception:
+                    token_env = ""
+
+            token_present = bool(token_env)
+            token_is_mock = str(token_env).startswith("ghs_mock") if token_present else False
+            git_executable = shutil.which("git") is not None
+            repo_name = f"{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}"
+
+            return {
+                "success": True,
+                "mode": "CLOUD",
+                "repository": repo_name,
+                "token_present": token_present,
+                "token_is_mock": token_is_mock,
+                "push_possible": token_present and git_executable,
+                "clone_possible": git_executable,
+                "generators_available": True,
+                "message": "Cloud Mode active. Render operations run via ephemeral workspaces."
+            }
         else:
             rc = get_repo_context()
             git_svc = get_git_service(rc)
+            git_status = git_svc.get_git_status()
+            remote = git_status.get("remote", "") or ""
+            token_env = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN") or ""
+            token_present = bool(token_env)
+            token_is_mock = str(token_env).startswith("ghs_mock") if token_present else False
 
-        git_status = git_svc.get_git_status()
-        remote = git_status.get("remote", "") or ""
-        token_env = os.environ.get("GITHUB_TOKEN") or os.environ.get("AGENT_AUTH_TOKEN") or ""
-        token_present = bool(token_env)
-        token_is_mock = str(token_env).startswith("ghs_mock") if token_present else False
-
-        push_possible = True
-        message = "Push appears possible."
-        if "github.com" in remote and not token_present and is_cloud_mode():
-            push_possible = False
-            message = (
-                "Remote is GitHub and no GITHUB_TOKEN/AGENT_AUTH_TOKEN detected. "
-                "Provide a token or configure a GitHub App as described in docs/GitHub-Deploy.md"
-            )
-
-        return {
-            "git": git_status,
-            "remote": remote,
-            "token_present": token_present,
-            "token_is_mock": token_is_mock,
-            "push_possible": push_possible,
-            "message": message
-        }
+            return {
+                "success": True,
+                "mode": "LOCAL",
+                "git": git_status,
+                "remote": remote,
+                "token_present": token_present,
+                "token_is_mock": token_is_mock,
+                "push_possible": True,
+                "clone_possible": True,
+                "generators_available": True,
+                "message": "Local Mode active."
+            }
     except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+        raise HTTPException(status_code=500, detail={"success": False, "error": str(e)})
