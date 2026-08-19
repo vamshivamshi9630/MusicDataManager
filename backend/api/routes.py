@@ -2,7 +2,7 @@ import os
 import json
 import shutil
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, Header
 from pydantic import BaseModel
 
@@ -14,6 +14,7 @@ from backend.services.duplicate import DuplicateDetectionService
 from backend.services.generator import GeneratorService, GeneratorValidationError
 from backend.services.git_sync import GitSyncService, GitSyncError
 from backend.services.catalog import cloud_catalog_service
+from backend.services.fuzzy_search import search_albums_fuzzy, check_near_duplicate_album
 
 router = APIRouter(prefix="/api")
 
@@ -53,6 +54,11 @@ class AlbumMetadataRequest(BaseModel):
     director: Optional[str] = "Unknown"
     producer: Optional[str] = "Unknown"
     banner: Optional[str] = "Unknown"
+    mode: Optional[str] = "add"
+
+class CheckDuplicateRequest(BaseModel):
+    album_name: str
+    mode: Optional[str] = "add"
 
 class RenameSongRequest(BaseModel):
     album_name: str
@@ -125,6 +131,40 @@ def get_stats():
             "mode": "LOCAL",
             "error": str(e)
         }
+
+@router.get("/albums/search")
+def search_albums_endpoint(q: str = Query("", description="Query string for fuzzy album search")):
+    """Generic fuzzy search across all existing catalog albums."""
+    if is_cloud_mode():
+        return cloud_catalog_service.search_albums(q)
+
+    rc = get_repo_context()
+    ms = get_metadata_service(rc)
+    album_dirs = rc.list_all_album_directories()
+
+    candidates = []
+    for d in album_dirs:
+        info = ms.load_album_info(d.name)
+        candidates.append({
+            "name": d.name,
+            "musicDirector": info.get("musicDirector", "Unknown"),
+            "year": info.get("year", 2026),
+            "songCount": len(list(d.glob("*.mp3"))),
+            "hasArtwork": (d / f"{d.name}.png").exists()
+        })
+
+    matches = search_albums_fuzzy(q, candidates, limit=10)
+    return {"query": q, "total_matches": len(matches), "suggestions": matches}
+
+@router.post("/albums/check-duplicate")
+def check_duplicate_album_endpoint(req: CheckDuplicateRequest):
+    """Evaluates candidate album name for exact and fuzzy near-duplicates."""
+    if is_cloud_mode():
+        return cloud_catalog_service.check_duplicate_album(req.album_name)
+
+    rc = get_repo_context()
+    existing_names = [d.name for d in rc.list_all_album_directories()]
+    return check_near_duplicate_album(req.album_name, existing_names)
 
 @router.get("/directors/autocomplete")
 def autocomplete_directors(q: str = Query("", description="Query string for music director")):
@@ -224,8 +264,22 @@ def get_album_details(album_name: str):
 
 @router.post("/albums/create-or-select")
 def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)):
+    # Perform backend near-duplicate protection if adding a new album
+    if req.mode == "add":
+        if is_cloud_mode():
+            dup_res = cloud_catalog_service.check_duplicate_album(req.album_name)
+        else:
+            rc = get_repo_context()
+            existing_names = [d.name for d in rc.list_all_album_directories()]
+            dup_res = check_near_duplicate_album(req.album_name, existing_names)
+
+        if dup_res.get("duplicate"):
+            raise HTTPException(
+                status_code=400,
+                detail=dup_res
+            )
+
     if is_cloud_mode():
-        # In cloud mode, metadata selection is validated and stored in session/job staging
         return {
             "already_exists": False,
             "album_name": req.album_name,
@@ -242,7 +296,6 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
         raise HTTPException(status_code=400, detail=str(e))
 
     already_exists = album_dir.exists()
-
     ms.save_album_info(album_name, req.dict())
     existing_info = ms.load_album_info(album_name)
 
@@ -297,7 +350,6 @@ async def upload_song(
     _auth=Depends(check_token)
 ):
     if is_cloud_mode():
-        # In cloud mode, validate MP3 signature/0-byte shield and return cloud staging response
         staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
         staging_file = staging_dir / f"_temp_{file.filename}"
@@ -340,7 +392,6 @@ async def upload_song(
     final_filename = f"{filename_stem}.mp3"
     target_file = rc.get_song_path(album_name, final_filename)
 
-    # Use isolated staging dir
     staging_file = rc.get_staging_path("session_upload", f"_temp_{safe_original_filename}")
     with open(staging_file, "wb") as f:
         shutil.copyfileobj(file.file, f)

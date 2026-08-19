@@ -117,7 +117,7 @@
                     <i class="icon-search text-xs"></i> Search Existing Album to Edit
                 </label>
                 <div class="relative">
-                    <input type="text" id="input-edit-search" oninput="onEditSearchInput(this.value)" placeholder="Type existing album name e.g. Pushpa 2..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
+                    <input type="text" id="input-edit-search" oninput="debouncedEditSearchInput(this.value)" placeholder="Type existing album name e.g. Pushpa 2 (fuzzy search supported)..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500">
                     <div id="edit-album-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-30 max-h-56 overflow-y-auto"></div>
                 </div>
             </div>
@@ -136,9 +136,10 @@
                     </h2>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
+                        <div class="relative">
                             <label class="block text-xs text-slate-400 mb-1.5">Album Name</label>
-                            <input type="text" id="input-album-name" oninput="onAlbumNameChanged()" placeholder="e.g. Pushpa 2 The Rule" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                            <input type="text" id="input-album-name" oninput="debouncedAlbumNameChanged()" placeholder="e.g. Pushpa 2 The Rule" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                            <div id="add-album-fuzzy-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-30 max-h-56 overflow-y-auto"></div>
                             <p id="album-exists-badge" class="hidden text-xs text-amber-400 mt-1 flex items-center gap-1">
                                 <i class="icon-alert-triangle text-xs"></i> <span id="album-exists-msg">Album already exists in repository!</span>
                             </p>
@@ -146,7 +147,7 @@
 
                         <div class="relative">
                             <label class="block text-xs text-slate-400 mb-1.5">Music Director</label>
-                            <input type="text" id="input-music-director" oninput="onDirectorInput(this.value)" placeholder="Type to search e.g. Devi Sri Prasad" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
+                            <input type="text" id="input-music-director" oninput="debouncedDirectorInput(this.value)" placeholder="Type to search e.g. Devi Sri Prasad" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500">
                             <div id="director-suggestions" class="hidden absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-20 max-h-48 overflow-y-auto"></div>
                         </div>
 
@@ -265,6 +266,19 @@
             songs: []
         };
 
+        // Utility: Debounce wrapper
+        function debounce(func, wait = 200) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
+        const debouncedAlbumNameChanged = debounce(onAlbumNameChanged, 250);
+        const debouncedEditSearchInput = debounce(onEditSearchInput, 200);
+        const debouncedDirectorInput = debounce(onDirectorInput, 200);
+
         document.addEventListener("DOMContentLoaded", () => {
             refreshRepoStatus();
             loadAlbumsCatalog();
@@ -315,6 +329,9 @@
             const formSection = document.getElementById('album-form-section');
             const titleElement = document.getElementById('form-mode-title');
             const editingTag = document.getElementById('editing-album-tag');
+            const fuzzySugBox = document.getElementById('add-album-fuzzy-suggestions');
+
+            if (fuzzySugBox) fuzzySugBox.classList.add('hidden');
 
             if (mode === 'add') {
                 btnAdd.className = "glass-panel p-5 rounded-2xl text-left border-2 transition border-brand-500 bg-brand-600/10";
@@ -324,7 +341,6 @@
                 titleElement.innerText = "Add New Album Identity";
                 editingTag.classList.add('hidden');
 
-                // Reset form for fresh addition
                 resetAlbumForm();
             } else {
                 btnEdit.className = "glass-panel p-5 rounded-2xl text-left border-2 transition border-cyan-500 bg-cyan-600/10";
@@ -362,28 +378,38 @@
             renderSongsList();
         }
 
-        function onEditSearchInput(val) {
+        async function onEditSearchInput(val) {
             const sugBox = document.getElementById('edit-album-suggestions');
             if (!val.trim()) {
                 sugBox.classList.add('hidden');
                 return;
             }
-            const q = val.trim().lowerCase();
-            const matches = state.albums.filter(a => a.name && a.name.toLowerCase().includes(q)).slice(0, 10);
-            if (matches.length > 0) {
-                sugBox.innerHTML = matches.map(a => `
-                    <div onclick="selectAlbumForEditing('${a.name.replace(/'/g, "\\'")}')" class="px-4 py-3 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0 flex items-center justify-between">
-                        <div>
-                            <p class="font-semibold">${a.name}</p>
-                            <p class="text-xs text-slate-400">${a.musicDirector} • ${a.year}</p>
-                        </div>
-                        <span class="text-xs text-cyan-400 font-mono">${a.songCount} songs</span>
-                    </div>
-                `).join('');
-                sugBox.classList.remove('hidden');
-            } else {
-                sugBox.classList.add('hidden');
+            try {
+                const res = await fetch(`${API_BASE}/albums/search?q=${encodeURIComponent(val)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.suggestions && data.suggestions.length > 0) {
+                        sugBox.innerHTML = `
+                            <div class="px-3 py-1.5 bg-slate-950 text-[10px] uppercase font-bold text-cyan-400 border-b border-slate-800">
+                                Existing Matching Albums
+                            </div>
+                        ` + data.suggestions.map(a => `
+                            <div onclick="selectAlbumForEditing('${a.name.replace(/'/g, "\\'")}')" class="px-4 py-2.5 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0 flex items-center justify-between">
+                                <div>
+                                    <p class="font-semibold text-white">${a.name}</p>
+                                    <p class="text-xs text-slate-400">${a.musicDirector} • ${a.year}</p>
+                                </div>
+                                <span class="text-xs text-cyan-400 font-mono font-semibold">${a.songCount} songs</span>
+                            </div>
+                        `).join('');
+                        sugBox.classList.remove('hidden');
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.error("Fuzzy edit search failed:", e);
             }
+            sugBox.classList.add('hidden');
         }
 
         async function selectAlbumForEditing(albumName) {
@@ -444,30 +470,82 @@
                 : "flex-1 py-2.5 px-3 rounded-lg font-medium text-sm transition text-center text-slate-400 hover:text-white";
         }
 
-        function onAlbumNameChanged() {
+        async function onAlbumNameChanged() {
             const val = document.getElementById('input-album-name').value.trim();
             state.selectedAlbum = val;
             document.getElementById('auto-png-name').innerText = val ? `${val}.png` : '<AlbumName>.png';
 
-            if (state.workflowMode === 'add') {
-                const match = state.albums.find(a => a.name && a.name.toLowerCase() === val.toLowerCase());
-                const badge = document.getElementById('album-exists-badge');
-                const btnSubmit = document.getElementById('btn-sync-submit');
-                const blockedMsg = document.getElementById('duplicate-blocked-msg');
+            const sugBox = document.getElementById('add-album-fuzzy-suggestions');
+            const badge = document.getElementById('album-exists-badge');
+            const btnSubmit = document.getElementById('btn-sync-submit');
+            const blockedMsg = document.getElementById('duplicate-blocked-msg');
 
-                if (match) {
-                    document.getElementById('album-exists-msg').innerText = "Album already exists. Please use EDIT ALBUM mode to modify it.";
-                    badge.classList.remove('hidden');
-                    blockedMsg.classList.remove('hidden');
-                    btnSubmit.disabled = true;
-                    btnSubmit.classList.add('opacity-50', 'cursor-not-allowed');
-                } else {
-                    badge.classList.add('hidden');
-                    blockedMsg.classList.add('hidden');
-                    btnSubmit.disabled = false;
-                    btnSubmit.classList.remove('opacity-50', 'cursor-not-allowed');
-                }
+            if (!val || state.workflowMode !== 'add') {
+                sugBox.classList.add('hidden');
+                badge.classList.add('hidden');
+                blockedMsg.classList.add('hidden');
+                btnSubmit.disabled = false;
+                btnSubmit.classList.remove('opacity-50', 'cursor-not-allowed');
+                return;
             }
+
+            try {
+                // 1. Fetch fuzzy suggestions from backend
+                const searchRes = await fetch(`${API_BASE}/albums/search?q=${encodeURIComponent(val)}`);
+                if (searchRes.ok) {
+                    const searchData = await searchRes.json();
+                    if (searchData.suggestions && searchData.suggestions.length > 0) {
+                        sugBox.innerHTML = `
+                            <div class="px-3 py-1.5 bg-slate-950 text-[10px] uppercase font-bold text-amber-400 border-b border-slate-800 flex items-center justify-between">
+                                <span>Did you mean / Existing Albums?</span>
+                                <span class="text-[9px] text-slate-500">Click to switch to Edit Mode</span>
+                            </div>
+                        ` + searchData.suggestions.map(s => `
+                            <div onclick="switchToEditForAlbum('${s.name.replace(/'/g, "\\'")}')" class="px-4 py-2.5 hover:bg-slate-800 cursor-pointer text-sm text-white border-b border-slate-800 last:border-0 flex items-center justify-between">
+                                <div>
+                                    <span class="font-bold text-white">${s.name}</span>
+                                    <span class="text-xs text-slate-400 ml-2">${s.musicDirector || 'Unknown'} (${s.year || 2026})</span>
+                                </div>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-950 text-amber-400 border border-amber-800">Score: ${Math.round(s.match_score * 100)}%</span>
+                            </div>
+                        `).join('');
+                        sugBox.classList.remove('hidden');
+                    } else {
+                        sugBox.classList.add('hidden');
+                    }
+                }
+
+                // 2. Perform backend near-duplicate validation check
+                const checkRes = await fetch(`${API_BASE}/albums/check-duplicate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ album_name: val, mode: 'add' })
+                });
+
+                if (checkRes.ok) {
+                    const checkData = await checkRes.json();
+                    if (checkData.duplicate) {
+                        document.getElementById('album-exists-msg').innerText = checkData.reason || `Album '${checkData.matched_album}' already exists or is very similar! Please use EDIT ALBUM mode.`;
+                        badge.classList.remove('hidden');
+                        blockedMsg.classList.remove('hidden');
+                        btnSubmit.disabled = true;
+                        btnSubmit.classList.add('opacity-50', 'cursor-not-allowed');
+                    } else {
+                        badge.classList.add('hidden');
+                        blockedMsg.classList.add('hidden');
+                        btnSubmit.disabled = false;
+                        btnSubmit.classList.remove('opacity-50', 'cursor-not-allowed');
+                    }
+                }
+            } catch (e) {
+                console.error("Duplicate check failed:", e);
+            }
+        }
+
+        function switchToEditForAlbum(albumName) {
+            document.getElementById('add-album-fuzzy-suggestions').classList.add('hidden');
+            setAlbumWorkflowMode('edit');
+            selectAlbumForEditing(albumName);
         }
 
         async function onDirectorInput(val) {
@@ -619,21 +697,13 @@
                 return;
             }
 
-            if (state.workflowMode === 'add') {
-                const match = state.albums.find(a => a.name && a.name.toLowerCase() === albumName.toLowerCase());
-                if (match) {
-                    alert('Album already exists. Please use EDIT ALBUM mode to modify existing albums.');
-                    return;
-                }
-            }
-
             const modal = document.getElementById('sync-modal');
             const logBox = document.getElementById('sync-modal-body');
             modal.classList.remove('hidden');
             logBox.innerHTML = `<p>1. Initializing album identity: <b>${albumName}</b> (${state.workflowMode.toUpperCase()} mode)...</p>`;
 
             try {
-                // 1. Create / Select Album
+                // 1. Create / Select Album (with backend duplicate protection)
                 const metaRes = await fetch(`${API_BASE}/albums/create-or-select`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -641,9 +711,20 @@
                         album_name: albumName,
                         musicDirector: musicDirector || 'Unknown',
                         year: year,
-                        releaseDate: releaseDate || `${year}-01-01`
+                        releaseDate: releaseDate || `${year}-01-01`,
+                        mode: state.workflowMode
                     })
                 });
+
+                if (!metaRes.ok) {
+                    const err = await metaRes.json();
+                    const detail = err.detail;
+                    if (typeof detail === 'object' && detail.duplicate) {
+                        throw new Error(detail.reason || `Duplicate album '${detail.matched_album}' detected!`);
+                    }
+                    throw new Error(detail || "Album creation failed.");
+                }
+
                 const metaData = await metaRes.json();
                 logBox.innerHTML += `<p class="text-emerald-400">✓ Album metadata saved.</p>`;
 

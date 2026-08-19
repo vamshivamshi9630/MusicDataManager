@@ -3,6 +3,7 @@ import json
 import urllib.request
 from typing import List, Dict, Any, Optional
 from backend.core.config import settings
+from backend.services.fuzzy_search import search_albums_fuzzy, check_near_duplicate_album
 
 class CloudCatalogService:
     """Fetches and caches dynamic catalog metadata directly from GitHub in Cloud Mode."""
@@ -70,6 +71,28 @@ class CloudCatalogService:
                 "hasArtwork": bool(item.get("image"))
             })
         return {"total_albums": len(result), "albums": result}
+
+    def search_albums(self, query: str) -> Dict[str, Any]:
+        """Performs ranked generic fuzzy search over all catalog albums."""
+        idx = self.get_albums_index()
+        matches = search_albums_fuzzy(query, idx, limit=10)
+        formatted = []
+        for item in matches:
+            formatted.append({
+                "name": item.get("name", "Unknown"),
+                "musicDirector": item.get("artist") or item.get("musicDirector") or "Unknown",
+                "year": item.get("year", 2026),
+                "songCount": item.get("songCount", 0),
+                "hasArtwork": bool(item.get("image")),
+                "match_score": item.get("match_score", 0.0)
+            })
+        return {"query": query, "total_matches": len(formatted), "suggestions": formatted}
+
+    def check_duplicate_album(self, album_name: str) -> Dict[str, Any]:
+        """Backend near-duplicate check against cloud catalog."""
+        idx = self.get_albums_index()
+        existing_names = [a.get("name", "") for a in idx if a.get("name")]
+        return check_near_duplicate_album(album_name, existing_names)
 
     def match_music_director(self, query: str) -> Dict[str, List[str]]:
         if not query or not query.strip():
