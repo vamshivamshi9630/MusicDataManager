@@ -280,12 +280,29 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
             )
 
     if is_cloud_mode():
+        album_name = req.album_name.strip()
+        staging_dir = Path(tempfile.gettempdir()) / "musicdata_staging" / album_name
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        album_info_file = staging_dir / "album_info.json"
+        
+        metadata_dict = {
+            "musicDirector": req.musicDirector if req.musicDirector and req.musicDirector != "Unknown" else (req.director or "Unknown"),
+            "year": req.year or 2026,
+            "genre": req.genre or "Tollywood Soundtrack",
+            "language": req.language or "Telugu",
+            "country": req.country or "India",
+            "releaseDate": req.releaseDate or f"{req.year or 2026}-01-01"
+        }
+        
+        with open(album_info_file, "w", encoding="utf-8") as f:
+            json.dump(metadata_dict, f, indent=2)
+
         return {
             "success": True,
             "already_exists": False,
-            "album_name": req.album_name,
-            "metadata": req.dict(),
-            "message": f"Album '{req.album_name}' initialized for Cloud Sync."
+            "album_name": album_name,
+            "metadata": metadata_dict,
+            "message": f"Album '{album_name}' initialized for Cloud Sync."
         }
 
     rc = get_repo_context()

@@ -115,5 +115,22 @@ class TestMasterCloudSyncPipeline(unittest.TestCase):
         self.assertFalse(data["success"])
         self.assertIn("error", data)
 
+    def test_08_cloud_create_or_select_saves_album_info(self):
+        res = self.client.post(
+            "/api/albums/create-or-select",
+            json={
+                "album_name": "Test Lovers Day",
+                "year": 2019,
+                "musicDirector": "Shan Rahman",
+                "mode": "add"
+            }
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        
+        staging_info = Path(tempfile.gettempdir()) / "musicdata_staging" / "Test Lovers Day" / "album_info.json"
+        self.assertTrue(staging_info.exists())
+
 if __name__ == "__main__":
     unittest.main()
