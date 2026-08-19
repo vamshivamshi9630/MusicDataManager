@@ -167,7 +167,7 @@
                 <div id="step-2-container" class="glass-panel p-5 rounded-2xl space-y-4 relative z-10">
                     <h2 class="text-base font-semibold text-white flex items-center gap-2">
                         <span class="w-6 h-6 rounded-full bg-brand-600/30 text-brand-400 text-xs flex items-center justify-center font-bold">2</span>
-                        Album Artwork (Strict PNG Only)
+                        Album Artwork (Automatically converted to PNG)
                     </h2>
 
                     <div class="flex flex-col sm:flex-row items-center gap-4">
@@ -177,11 +177,11 @@
                         </div>
 
                         <div class="flex-1 w-full space-y-2">
-                            <input type="file" id="input-artwork-file" accept="image/png" onchange="onArtworkSelected(this)" class="hidden">
+                            <input type="file" id="input-artwork-file" accept="image/*,.png,.jpg,.jpeg,.webp,.bmp" onchange="onArtworkSelected(this)" class="hidden">
                             <button type="button" onclick="document.getElementById('input-artwork-file').click()" class="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl text-sm font-medium text-white transition flex items-center justify-center gap-2">
-                                <i class="icon-upload text-sm"></i> Select / Replace PNG Artwork
+                                <i class="icon-upload text-sm"></i> Select / Replace Artwork
                             </button>
-                            <p class="text-xs text-slate-400">Artwork must be strictly PNG and will automatically be saved as <code id="auto-png-name" class="text-brand-400 font-mono">&lt;AlbumName&gt;.png</code></p>
+                            <p class="text-xs text-slate-400">JPG, JPEG, WebP, PNG & supported formats accepted. Artwork is automatically converted to PNG as <code id="auto-png-name" class="text-brand-400 font-mono">&lt;AlbumName&gt;.png</code>.</p>
                         </div>
                     </div>
                 </div>
@@ -603,11 +603,6 @@
         function onArtworkSelected(input) {
             if (!input.files || !input.files[0]) return;
             const file = input.files[0];
-            if (!file.name.toLowerCase().endsWith('.png')) {
-                alert('Artwork artwork must strictly be a PNG file (.png)');
-                input.value = '';
-                return;
-            }
             state.artworkFile = file;
             const reader = new FileReader();
             reader.onload = (e) => {

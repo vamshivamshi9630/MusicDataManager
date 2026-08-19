@@ -310,7 +310,7 @@ def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)
 async def upload_artwork(album_name: str, file: UploadFile = File(...), _auth=Depends(check_token)):
     content = await file.read()
     try:
-        validation_service.validate_png_bytes(content, file.filename)
+        png_bytes = validation_service.process_and_convert_to_png(content, file.filename)
     except FileValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -332,7 +332,7 @@ async def upload_artwork(album_name: str, file: UploadFile = File(...), _auth=De
     album_dir.mkdir(parents=True, exist_ok=True)
     target_png = rc.get_image_path(album_name)
     with open(target_png, "wb") as f:
-        f.write(content)
+        f.write(png_bytes)
 
     return {
         "success": True,
