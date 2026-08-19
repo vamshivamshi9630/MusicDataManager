@@ -81,6 +81,19 @@ class BaseGitSyncService(IGitSyncProvider):
             "changed_files": changed_files[:20]
         }
 
+    def get_remote_head_sha(self) -> str:
+        """Fetch current remote HEAD SHA for branch main using ls-remote or rev-parse origin/main."""
+        try:
+            ls_out = self._run_git(["ls-remote", "origin", settings.GITHUB_BRANCH], check=False, timeout=15)
+            if ls_out and ls_out.strip():
+                return ls_out.strip().split()[0]
+        except Exception:
+            pass
+        try:
+            return self._run_git(["rev-parse", f"origin/{settings.GITHUB_BRANCH}"], check=False, timeout=10) or ""
+        except Exception:
+            return ""
+
     def verify_remote_sync(self) -> Dict[str, Any]:
         if os.environ.get("SOURCE_REPO_OVERRIDE") or not settings.GITHUB_APP_INSTALLATION_ID:
             local_head = self._run_git(["rev-parse", "HEAD"], check=False)[:12] or "dry_run_head"
@@ -171,11 +184,24 @@ class BaseGitSyncService(IGitSyncProvider):
                         exit_code=128,
                     )
 
+        push_timeout = getattr(settings, "GIT_PUSH_TIMEOUT_SECONDS", 180)
         try:
-            push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH], timeout=35)
-        except GitSyncError as e:
-            e.stage = "git_push"
-            raise e
+            push_out = self._run_git(["push", "origin", settings.GITHUB_BRANCH], timeout=push_timeout)
+        except GitSyncError as push_err:
+            # Task 4 & Task 5: Post-timeout Remote Verification
+            # If git push timed out or raised an error, verify whether the commit actually reached remote HEAD!
+            remote_after_sha = self.get_remote_head_sha()
+            if remote_after_sha and (remote_after_sha == commit_sha or remote_after_sha.startswith(commit_sha[:7])):
+                print(f"[GIT SYNC] Push timed out or errored locally, but remote HEAD '{remote_after_sha[:7]}' matches local commit SHA '{commit_sha[:7]}'. Verified push SUCCESS.")
+                return {
+                    "committed": True,
+                    "pushed": True,
+                    "commit_sha": commit_sha,
+                    "commit_message": msg,
+                    "push_log": f"Verified via remote HEAD check: {remote_after_sha[:7]}"
+                }
+            push_err.stage = "git_push"
+            raise push_err
 
         return {
             "committed": True,

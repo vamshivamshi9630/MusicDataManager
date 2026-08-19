@@ -19,4 +19,9 @@ class Settings:
         self.API_PORT: int = int(os.environ.get("API_PORT", 8000))
         self.HOST: str = os.environ.get("HOST", "0.0.0.0")
 
+        # Configurable Git Timeouts (Seconds)
+        self.GIT_PUSH_TIMEOUT_SECONDS: int = int(os.environ.get("GIT_PUSH_TIMEOUT_SECONDS", 180))
+        self.GIT_CLONE_TIMEOUT_SECONDS: int = int(os.environ.get("GIT_CLONE_TIMEOUT_SECONDS", 60))
+        self.GIT_OPERATION_TIMEOUT_SECONDS: int = int(os.environ.get("GIT_OPERATION_TIMEOUT_SECONDS", 45))
+
 settings = Settings()
