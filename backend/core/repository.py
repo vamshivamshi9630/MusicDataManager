@@ -264,7 +264,7 @@ class CloudRepository(IRepositoryProvider):
             
             # Step 1: Shallow blobless clone without checkout (super fast, < 4s)
             cmd_clone = [
-                "git", "clone",
+                "git", "-c", "pack.threads=1", "clone",
                 "--filter=blob:none",
                 "--no-checkout",
                 "--depth", "1",
@@ -295,8 +295,9 @@ class CloudRepository(IRepositoryProvider):
 
             subprocess.run(["git", "sparse-checkout", "set"] + sparse_targets, cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
             
-            # Step 3: Checkout branch main
+            # Step 3: Checkout branch main and root generator scripts
             subprocess.run(["git", "checkout", settings.GITHUB_BRANCH], cwd=self._root, capture_output=True, text=True, env=env, timeout=35, check=False)
+            subprocess.run(["git", "checkout", settings.GITHUB_BRANCH, "--", "generate_metadata.py", "generate_or_update_songs_with_details.py", "songs_with_details.json"], cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
 
         # Configure author identity for Cloud commit operations
         subprocess.run(["git", "config", "user.name", "MusicData Manager Cloud"], cwd=self._root, check=False)
