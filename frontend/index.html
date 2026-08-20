@@ -312,6 +312,7 @@
 
         async function refreshRepoStatus() {
             try {
+                await fetch(`${API_BASE}/catalog/refresh`, { method: 'POST' }).catch(() => {});
                 const healthRes = await fetch(`${API_BASE}/health`);
                 if (healthRes.ok) {
                     const healthData = await healthRes.json();

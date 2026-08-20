@@ -514,6 +514,9 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
                 shutil.rmtree(staging_dir, ignore_errors=True)
             cloud_repo.cleanup_workspace()
 
+            # Invalidate cloud catalog cache so new album appears immediately in autocomplete & edit
+            cloud_catalog_service.refresh_catalog()
+
             return {
                 "success": True,
                 "status": "COMPLETED",
@@ -625,3 +628,12 @@ def sync_diagnostics(_auth=Depends(check_token)):
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail={"success": False, "error": str(e)})
+
+
+@router.post("/catalog/refresh")
+def refresh_catalog_endpoint(_auth=Depends(check_token)):
+    """Trigger manual cache invalidation to force fetching fresh GitHub metadata immediately."""
+    if is_cloud_mode():
+        cloud_catalog_service.refresh_catalog()
+        cloud_catalog_service.get_albums_index(force_refresh=True)
+    return {"success": True, "message": "Catalog cache refreshed successfully."}

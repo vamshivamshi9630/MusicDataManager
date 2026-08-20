@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import urllib.request
 from typing import List, Dict, Any, Optional
@@ -16,10 +17,26 @@ class CloudCatalogService:
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._albums_index_cache: Optional[List[Dict[str, Any]]] = None
         self._artists_index_cache: Optional[List[Dict[str, Any]]] = None
+        self._last_fetch_time: float = 0.0
 
-    def _fetch_json(self, path: str) -> Any:
-        url = f"{self.raw_base_url}/{path}"
-        req = urllib.request.Request(url, headers={"User-Agent": "MusicData-Manager-Cloud/1.0"})
+    def refresh_catalog(self):
+        """Invalidate in-memory caches to force fetching fresh metadata from GitHub."""
+        self._stats_cache = None
+        self._albums_index_cache = None
+        self._artists_index_cache = None
+        self._last_fetch_time = 0.0
+
+    def _fetch_json(self, path: str, bypass_cache: bool = True) -> Any:
+        t_param = f"?t={int(time.time())}" if bypass_cache else ""
+        url = f"{self.raw_base_url}/{path}{t_param}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "MusicData-Manager-Cloud/1.0",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache"
+            }
+        )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
@@ -47,17 +64,20 @@ class CloudCatalogService:
                 "mode": "CLOUD"
             }
 
-    def get_albums_index(self) -> List[Dict[str, Any]]:
-        if self._albums_index_cache is not None:
+    def get_albums_index(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        now = time.time()
+        # Refetch if cache is missing, force_refresh requested, or cache is older than 15 seconds
+        if not force_refresh and self._albums_index_cache is not None and (now - self._last_fetch_time) < 15:
             return self._albums_index_cache
         try:
             idx = self._fetch_json("metadata/indexes/albums.json")
             if isinstance(idx, list):
                 self._albums_index_cache = idx
+                self._last_fetch_time = now
                 return idx
         except Exception as e:
             print(f"[CloudCatalogService] Failed to fetch albums index: {e}")
-        return []
+        return self._albums_index_cache or []
 
     def get_albums_list(self) -> Dict[str, Any]:
         idx = self.get_albums_index()
