@@ -211,10 +211,18 @@ def scan_all_albums() -> List[Dict]:
             return
         try:
             content = v2_script.read_text(encoding="utf-8")
-            target = "is_modified = (album_name, mp3_file.name) in modified_songs_set or not use_cache"
-            replacement = "is_modified = album_cache is None or (album_name, mp3_file.name) in modified_songs_set or not use_cache"
-            if target in content:
-                v2_script.write_text(content.replace(target, replacement), encoding="utf-8")
+            replacement_code = (
+                'cached_song_names = {s.get("audio") for s in album_cache.get("songs", [])} if album_cache else set()\n'
+                '            cached_song_ids = {s.get("id") for s in album_cache.get("songs", [])} if album_cache else set()\n'
+                '            is_in_cache = (mp3_file.name in cached_song_names) or (song_id in cached_song_ids)\n\n'
+                '            is_modified = album_cache is None or not is_in_cache or (album_name, mp3_file.name) in modified_songs_set or not use_cache'
+            )
+            target1 = "is_modified = (album_name, mp3_file.name) in modified_songs_set or not use_cache"
+            target2 = "is_modified = album_cache is None or (album_name, mp3_file.name) in modified_songs_set or not use_cache"
+            if target1 in content:
+                v2_script.write_text(content.replace(target1, replacement_code), encoding="utf-8")
+            elif target2 in content:
+                v2_script.write_text(content.replace(target2, replacement_code), encoding="utf-8")
         except Exception:
             pass
 
