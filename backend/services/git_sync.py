@@ -128,8 +128,19 @@ class BaseGitSyncService(IGitSyncProvider):
         else:
             msg = f"added songs/album with {album_name}"
 
+        # Cleanup Python bytecode cache (__pycache__/*.pyc) before git add to prevent committing binary cache junk
+        try:
+            import shutil
+            for pycache_path in self.repo.root.rglob("__pycache__"):
+                if pycache_path.is_dir():
+                    shutil.rmtree(pycache_path, ignore_errors=True)
+        except Exception:
+            pass
+
         # Stage all intended album and metadata changes
         self._run_git(["add", "."])
+        self._run_git(["rm", "-r", "--cached", "generator/__pycache__"], check=False)
+        self._run_git(["rm", "-r", "--cached", "__pycache__"], check=False)
         
         status_out = self._run_git(["status", "--porcelain"], check=False)
 
