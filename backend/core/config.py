@@ -24,4 +24,10 @@ class Settings:
         self.GIT_CLONE_TIMEOUT_SECONDS: int = int(os.environ.get("GIT_CLONE_TIMEOUT_SECONDS", 60))
         self.GIT_OPERATION_TIMEOUT_SECONDS: int = int(os.environ.get("GIT_OPERATION_TIMEOUT_SECONDS", 45))
 
+        # Latest Releases Discovery Engine & Database Settings
+        self.DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+        self.LATEST_RELEASES_DB_PATH: str = os.environ.get("LATEST_RELEASES_DB_PATH", "data/latest_releases.db")
+        self.CRON_SECRET: str = os.environ.get("CRON_SECRET", "musicdata-cron-secret-change-in-production")
+        self.LATEST_RELEASES_ENABLED: bool = os.environ.get("LATEST_RELEASES_ENABLED", "1").lower() in ("1", "true")
+
 settings = Settings()

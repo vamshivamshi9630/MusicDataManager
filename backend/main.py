@@ -14,6 +14,7 @@ from backend.core.config import settings
 from backend.api.routes import router as local_router
 from backend.api.auth_routes import router as auth_router
 from backend.api.cloud_routes import router as cloud_job_router, ws_router as cloud_ws_router
+from backend.api.latest_releases_routes import router as latest_releases_router
 from backend.services.validation import FileValidationError
 from backend.core.repository import PathTraversalError, CloudWorkspaceError
 from backend.services.generator import GeneratorValidationError
@@ -133,6 +134,7 @@ app.include_router(local_router)
 app.include_router(auth_router)
 app.include_router(cloud_job_router)
 app.include_router(cloud_ws_router)
+app.include_router(latest_releases_router)
 
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
 if frontend_dir.exists():
@@ -165,3 +167,11 @@ def startup_checks():
                        "Cloud sync push operations will fail until a token or GitHub App is configured. \n"
                        "See docs/GitHub-Deploy.md for setup instructions.")
         print("[WARN] CLOUD_MODE active but no GITHUB_TOKEN or AGENT_AUTH_TOKEN set. See docs/GitHub-Deploy.md")
+
+    # Initialize Latest Releases Discovery Database
+    try:
+        from backend.services.latest_releases.db import get_latest_releases_db
+        db = get_latest_releases_db()
+        logger.info(f"Latest Releases database initialized (PostgreSQL: {db.is_postgres}).")
+    except Exception as e:
+        logger.warning(f"Could not initialize Latest Releases database: {e}")

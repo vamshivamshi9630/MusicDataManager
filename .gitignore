@@ -23,6 +23,8 @@ staging/
 tmp/
 temp/
 musicdata_workspaces/
+data/
+*.db
 
 # Logs & Debug Output
 *.log

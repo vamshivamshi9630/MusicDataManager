@@ -1,3 +1,10 @@
+databases:
+  - name: musicdata-db
+    databaseName: musicdata_db
+    user: musicdata_user
+    plan: free
+    region: oregon
+
 services:
   - type: web
     name: musicdata-manager-cloud
@@ -8,6 +15,10 @@ services:
     envVars:
       - key: CLOUD_MODE
         value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: musicdata-db
+          property: connectionString
       - key: GITHUB_OWNER
         value: vamshivamshi9630
       - key: GITHUB_REPOSITORY
@@ -30,3 +41,49 @@ services:
         sync: false
       - key: AGENT_AUTH_TOKEN
         sync: false
+
+  - type: cron
+    name: latest-releases-daily-scan
+    env: docker
+    plan: free
+    region: oregon
+    schedule: "30 3 * * *" # 03:30 UTC = 09:00 AM IST (Asia/Kolkata)
+    dockerCommand: python -m backend.services.latest_releases.cli scan
+    envVars:
+      - key: CLOUD_MODE
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: musicdata-db
+          property: connectionString
+      - key: GITHUB_OWNER
+        value: vamshivamshi9630
+      - key: GITHUB_REPOSITORY
+        value: MusicData
+      - key: GITHUB_BRANCH
+        value: main
+      - key: GITHUB_APP_ID
+        fromService:
+          type: web
+          name: musicdata-manager-cloud
+          envVarKey: GITHUB_APP_ID
+      - key: GITHUB_APP_INSTALLATION_ID
+        fromService:
+          type: web
+          name: musicdata-manager-cloud
+          envVarKey: GITHUB_APP_INSTALLATION_ID
+      - key: GITHUB_APP_PRIVATE_KEY
+        fromService:
+          type: web
+          name: musicdata-manager-cloud
+          envVarKey: GITHUB_APP_PRIVATE_KEY
+      - key: GITHUB_TOKEN
+        fromService:
+          type: web
+          name: musicdata-manager-cloud
+          envVarKey: GITHUB_TOKEN
+      - key: AGENT_AUTH_TOKEN
+        fromService:
+          type: web
+          name: musicdata-manager-cloud
+          envVarKey: AGENT_AUTH_TOKEN
