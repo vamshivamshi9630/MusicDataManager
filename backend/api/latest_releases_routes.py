@@ -107,6 +107,26 @@ def download_track(
             detail=f"Unauthorized download source. Domain must be an approved provider: {ALLOWED_DOWNLOAD_DOMAINS}"
         )
 
+    # Mandatory Duplicate-Download Protection (Backend Verification)
+    if album_name and song_title:
+        from backend.services.catalog import cloud_catalog_service
+        try:
+            cat_match = cloud_catalog_service.find_canonical_album(album_name)
+            if cat_match:
+                cat_meta = cloud_catalog_service.get_album_metadata(cat_match)
+                cat_songs = cat_meta.get("songs", [])
+                is_matched, conf, score, matched = cloud_catalog_service.match_song_to_catalog(song_title, cat_songs)
+                if is_matched:
+                    matched_title = matched.get("title") if matched else song_title
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Duplicate Download Blocked: Song '{matched_title}' already exists in MusicData catalog for album '{cat_match.get('name')}'."
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.debug(f"Catalog duplicate verification bypassed due to lookup error: {e}")
+
     base_name = song_title or url.split("/")[-1].replace(".mp3", "")
     safe_name = sanitize_filename(base_name)
     if not safe_name.lower().endswith(".mp3"):

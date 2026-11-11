@@ -1,8 +1,9 @@
+import os
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from backend.services.fuzzy_search import normalize_text, calculate_similarity_ratio
-from backend.services.catalog import cloud_catalog_service
+from backend.services.catalog import cloud_catalog_service, CatalogLookupError
 from backend.services.latest_releases.models import (
     NotificationType,
     TrackingStatus,
@@ -12,6 +13,9 @@ from backend.services.latest_releases.models import (
 )
 
 logger = logging.getLogger("musicdata.latest_releases.song_comparator")
+
+def is_cloud_mode() -> bool:
+    return os.environ.get("CLOUD_MODE", "").strip().lower() in ("1", "true")
 
 class SongComparator:
     """
@@ -37,78 +41,59 @@ class SongComparator:
             logger.warning(f"Failed to fetch catalog albums: {e}")
             return []
 
-    def find_matching_catalog_album(self, discovered_album_name: str, discovered_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def find_matching_catalog_album(
+        self,
+        discovered_album_name: str,
+        discovered_language: Optional[str] = None,
+        discovered_year: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
         """
-        Finds matching album in MusicData catalog using exact and high-confidence normalized match.
-        If discovered_language is provided and catalog specifies language, requires language compatibility.
+        Finds matching album in MusicData catalog using canonical album matching.
+        Strictly enforces language verification and release year sanity.
         """
-        norm_disc = normalize_text(discovered_album_name)
-        if not norm_disc:
-            return None
-
-        catalog = self.get_catalog_albums()
-
-        def language_compatible(cat_alb: Dict[str, Any]) -> bool:
-            if not discovered_language:
-                return True
-            cat_lang = cat_alb.get("language")
-            if not cat_lang:
-                return True
-            return str(cat_lang).strip().lower() == str(discovered_language).strip().lower()
-
-        # 1. Exact or exact-normalized match
-        for alb in catalog:
-            cat_name = alb.get("name", "")
-            if normalize_text(cat_name) == norm_disc and language_compatible(alb):
-                return alb
-
-        # 2. High similarity match (e.g. >= 0.90)
-        best_match = None
-        best_score = 0.0
-        for alb in catalog:
-            if not language_compatible(alb):
-                continue
-            cat_name = alb.get("name", "")
-            score = calculate_similarity_ratio(norm_disc, normalize_text(cat_name))
-            if score > best_score:
-                best_score = score
-                best_match = alb
-
-        if best_score >= 0.90:
-            return best_match
-
-        return None
-
-    def fetch_catalog_album_songs(self, catalog_album: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Fetches the individual songs for a catalog album.
-        In Cloud Mode, loads metadata/albums/{partition}/{albumName}.json.
-        """
-        album_name = catalog_album.get("name", "")
-        partition = catalog_album.get("partition", "")
-        if not partition and album_name:
-            from generator.utils import get_album_partition
-            partition = get_album_partition(album_name)
-
-        if not partition or not album_name:
-            return []
-
-        try:
-            path = f"metadata/albums/{partition}/{album_name}.json"
-            album_data = cloud_catalog_service._fetch_json(path)
-            if isinstance(album_data, dict):
-                return album_data.get("songs", [])
-        except Exception as e:
-            logger.debug(f"Could not fetch songs JSON for {album_name}: {e}")
-
-        return []
+        return cloud_catalog_service.find_canonical_album(
+            query_name=discovered_album_name,
+            query_language=discovered_language,
+            query_year=discovered_year,
+            candidate_albums=self._catalog_albums
+        )
 
     @staticmethod
     def normalize_song_title(title: str) -> str:
-        norm = normalize_text(title)
-        norm = re.sub(r'\b(song|songs|audio|video|full song|lyrical)\b', '', norm).strip()
-        norm = re.sub(r'\s+', ' ', norm).strip()
-        return norm
+        return cloud_catalog_service.normalize_song_title(title)
+
+    def fetch_catalog_album_songs(self, catalog_album: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Fetches the authoritative individual songs for a catalog album.
+        In Cloud Mode, loads metadata/albums/{partition}/{albumName}.json directly.
+        Raises CatalogLookupError if fetch fails (never silently returns empty list).
+        """
+        album_name = catalog_album.get("name", "")
+        if not album_name:
+            return []
+
+        # If running in local mode with repo root available:
+        if not is_cloud_mode():
+            try:
+                rc = get_repo_context()
+                album_dir = rc.get_album_path(album_name)
+                if album_dir.exists():
+                    songs = []
+                    for mp3 in sorted(list(album_dir.glob("*.mp3"))):
+                        songs.append({
+                            "title": mp3.stem,
+                            "filename": mp3.name,
+                            "audio": mp3.name,
+                            "id": rc.get_stable_id(f"{album_name}{mp3.name}")
+                        })
+                    if songs:
+                        return songs
+            except Exception:
+                pass
+
+        # In Cloud Mode or fallback: fetch authoritative JSON from GitHub
+        data = cloud_catalog_service.get_album_metadata(catalog_album)
+        return data.get("songs", [])
 
     def compare_album(
         self,
@@ -117,8 +102,13 @@ class SongComparator:
         """
         Performs album-level and incremental song-level comparison.
         Updates discovered album and songs with match data and returns appropriate NotificationType (or None).
+        Raises CatalogLookupError if authoritative catalog cannot be verified.
         """
-        catalog_match = self.find_matching_catalog_album(discovered.album_name, discovered.language)
+        catalog_match = self.find_matching_catalog_album(
+            discovered.album_name,
+            discovered.language,
+            discovered.year
+        )
 
         if not catalog_match:
             # =================================================================
@@ -149,31 +139,19 @@ class SongComparator:
         missing_songs: List[DiscoveredSong] = []
 
         for disc_song in discovered.songs:
-            best_cat_song = None
-            best_score = 0.0
-            clean_disc = self.normalize_song_title(disc_song.song_title or disc_song.normalized_title)
+            is_matched, conf_str, score, best_cat_song = cloud_catalog_service.match_song_to_catalog(
+                disc_song.song_title or disc_song.normalized_title,
+                catalog_songs
+            )
+            disc_song.match_score = round(score, 3)
 
-            for cat_song in catalog_songs:
-                cat_title = cat_song.get("title") or cat_song.get("normalizedTitle") or ""
-                clean_cat = self.normalize_song_title(cat_title)
-                score1 = calculate_similarity_ratio(clean_disc, clean_cat)
-                score2 = calculate_similarity_ratio(disc_song.normalized_title, normalize_text(cat_title))
-                score = max(score1, score2)
-                if score > best_score:
-                    best_score = score
-                    best_cat_song = cat_song
-
-            disc_song.match_score = round(best_score, 3)
-
-            if best_score >= self.HIGH_CONFIDENCE_THRESHOLD:
-                # High-confidence match: Song already exists in catalog
+            if is_matched:
                 disc_song.exists_in_catalog = True
                 disc_song.catalog_song_title = best_cat_song.get("title") if best_cat_song else None
                 disc_song.catalog_song_id = best_cat_song.get("id") if best_cat_song else None
-                disc_song.match_confidence = MatchConfidence.EXACT if best_score == 1.0 else MatchConfidence.HIGH
+                disc_song.match_confidence = MatchConfidence.EXACT if conf_str == "EXACT" else MatchConfidence.HIGH
                 disc_song.tracking_status = TrackingStatus.ADDED_TO_MUSICDATA
-            elif best_score >= self.UNCERTAIN_CONFIDENCE_THRESHOLD:
-                # Uncertain match: Flagged for user review
+            elif conf_str == "UNCERTAIN":
                 disc_song.exists_in_catalog = False
                 disc_song.catalog_song_title = best_cat_song.get("title") if best_cat_song else None
                 disc_song.catalog_song_id = best_cat_song.get("id") if best_cat_song else None
@@ -181,7 +159,6 @@ class SongComparator:
                 disc_song.tracking_status = TrackingStatus.DOWNLOAD_SUGGESTED
                 missing_songs.append(disc_song)
             else:
-                # Missing song
                 disc_song.exists_in_catalog = False
                 disc_song.catalog_song_title = None
                 disc_song.catalog_song_id = None

@@ -43,14 +43,15 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     if isinstance(detail, dict):
         return JSONResponse(
             status_code=exc.status_code,
-            content={"success": False, "error": detail.get("message", str(detail)), **detail}
+            content={"success": False, "error": detail.get("message", str(detail)), "detail": detail, **detail}
         )
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "success": False,
             "stage": "http_request",
-            "error": str(detail)
+            "error": str(detail),
+            "detail": str(detail)
         }
     )
 

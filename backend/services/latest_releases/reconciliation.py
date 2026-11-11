@@ -51,43 +51,33 @@ def reconcile_active_notifications(
         if not album_name or not notif_id:
             continue
 
-        catalog_match = comparator.find_matching_catalog_album(album_name, language)
-        if not catalog_match:
-            # Album still not in MusicData catalog
-            continue
-
-        catalog_songs = comparator.fetch_catalog_album_songs(catalog_match)
-        if not catalog_songs:
+        try:
+            catalog_match = comparator.find_matching_catalog_album(album_name, language, notif.get("year"))
+            if not catalog_match:
+                continue
+            catalog_songs = comparator.fetch_catalog_album_songs(catalog_match)
+            if not catalog_songs:
+                continue
+        except Exception as e:
+            logger.warning(f"Could not verify catalog for '{album_name}': {e}. Preserving pending notification.")
             continue
 
         # Re-evaluate each song in notification
+        from backend.services.catalog import cloud_catalog_service
         changed = False
         for song in songs:
             if song.get("exists_in_catalog"):
                 continue
 
             disc_title = song.get("song_title") or song.get("normalized_title") or ""
-            clean_disc = comparator.normalize_song_title(disc_title)
+            is_matched, conf_str, score, best_cat_song = cloud_catalog_service.match_song_to_catalog(disc_title, catalog_songs)
 
-            best_cat_song = None
-            best_score = 0.0
-
-            for cat_song in catalog_songs:
-                cat_title = cat_song.get("title") or cat_song.get("normalizedTitle") or ""
-                clean_cat = comparator.normalize_song_title(cat_title)
-                score1 = calculate_similarity_ratio(clean_disc, clean_cat)
-                score2 = calculate_similarity_ratio(normalize_text(disc_title), normalize_text(cat_title))
-                score = max(score1, score2)
-                if score > best_score:
-                    best_score = score
-                    best_cat_song = cat_song
-
-            if best_score >= comparator.HIGH_CONFIDENCE_THRESHOLD:
+            if is_matched:
                 song["exists_in_catalog"] = True
                 song["catalog_song_title"] = best_cat_song.get("title") if best_cat_song else None
                 song["catalog_song_id"] = best_cat_song.get("id") if best_cat_song else None
-                song["match_confidence"] = MatchConfidence.HIGH.value
-                song["match_score"] = round(best_score, 3)
+                song["match_confidence"] = conf_str
+                song["match_score"] = round(score, 3)
                 song["tracking_status"] = TrackingStatus.ADDED_TO_MUSICDATA.value
                 changed = True
 

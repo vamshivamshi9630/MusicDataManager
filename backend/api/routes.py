@@ -199,10 +199,12 @@ def list_albums():
     return {"total_albums": len(result), "albums": result}
 
 @router.get("/albums/{album_name}")
-def get_album_details(album_name: str):
+def get_album_details(album_name: str, language: Optional[str] = None):
     if is_cloud_mode():
-        albums_idx = cloud_catalog_service.get_albums_index()
-        match = next((a for a in albums_idx if a.get("name", "").lower() == album_name.lower()), None)
+        match = cloud_catalog_service.find_canonical_album(album_name, query_language=language)
+        if not match:
+            albums_idx = cloud_catalog_service.get_albums_index()
+            match = next((a for a in albums_idx if a.get("name", "").lower() == album_name.lower()), None)
         if not match:
             raise HTTPException(status_code=404, detail=f"Album '{album_name}' not found in cloud catalog.")
         
@@ -211,19 +213,53 @@ def get_album_details(album_name: str):
         has_art = bool(match.get("image"))
         art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{part}/{art_name}/{art_name}.png" if has_art else None
 
+        # Fetch authoritative album JSON
+        meta_songs = []
+        meta_album = {}
+        try:
+            album_meta = cloud_catalog_service.get_album_metadata(match)
+            meta_album = album_meta.get("album", {})
+            meta_songs = album_meta.get("songs", [])
+        except Exception as e:
+            logger.warning(f"Could not load authoritative album JSON for '{art_name}': {e}")
+
+        songs = []
+        for idx, s in enumerate(meta_songs):
+            title = s.get("title", "")
+            filename = s.get("audio") or f"{title}.mp3"
+            track_num = s.get("trackNumber") or s.get("track_number") or (idx + 1)
+            duration = s.get("duration", "")
+            singers = ", ".join(s.get("singers", [])) if isinstance(s.get("singers"), list) else (s.get("singers") or "")
+            composer = s.get("composer") or meta_album.get("musicDirector") or match.get("artist") or "Unknown"
+            audio_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{part}/{art_name}/{filename}"
+            songs.append({
+                "title": title,
+                "filename": filename,
+                "song_id": s.get("id"),
+                "track_number": track_num,
+                "duration": duration,
+                "singers": singers,
+                "composer": composer,
+                "file_size": s.get("fileSize", 0),
+                "audio_url": audio_url,
+                "is_existing": True,
+                "status": "EXISTS"
+            })
+
         return {
             "album_name": match.get("name"),
             "metadata": {
-                "album_name": match.get("name"),
-                "musicDirector": match.get("artist", "Unknown"),
-                "year": match.get("year", 2026),
-                "genre": match.get("genre", "Tollywood Soundtrack"),
-                "language": match.get("language", "Telugu")
+                "album_name": meta_album.get("name") or match.get("name"),
+                "musicDirector": meta_album.get("musicDirector") or match.get("artist", "Unknown"),
+                "year": meta_album.get("year") or match.get("year", 2026),
+                "genre": meta_album.get("genre") or match.get("genre", "Tollywood Soundtrack"),
+                "language": meta_album.get("language") or match.get("language", "Telugu"),
+                "releaseDate": meta_album.get("releaseDate") or ""
             },
             "has_artwork": has_art,
             "artwork_url": art_url,
-            "song_count": match.get("songCount", 0),
-            "songs": []
+            "song_count": len(songs) if songs else match.get("songCount", 0),
+            "songs": songs
         }
 
     rc = get_repo_context()
@@ -242,7 +278,7 @@ def get_album_details(album_name: str):
 
     mp3_files = sorted(list(album_dir.glob("*.mp3")))
     songs = []
-    for mp3 in mp3_files:
+    for idx, mp3 in enumerate(mp3_files):
         song_title = mp3.stem
         song_id = rc.get_stable_id(f"{album_name}{mp3.name}")
         st = mp3.stat()
@@ -250,8 +286,11 @@ def get_album_details(album_name: str):
             "title": song_title,
             "filename": mp3.name,
             "song_id": song_id,
+            "track_number": idx + 1,
             "file_size": st.st_size,
-            "audio_url": rc.build_raw_audio_url(album_name, mp3.name)
+            "audio_url": rc.build_raw_audio_url(album_name, mp3.name),
+            "is_existing": True,
+            "status": "EXISTS"
         })
 
     return {
