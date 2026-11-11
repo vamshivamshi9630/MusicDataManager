@@ -289,26 +289,85 @@
                 </div>
             </div>
 
-            <!-- Filter Tabs & Actions -->
-            <div class="flex flex-wrap items-center justify-between gap-2 pb-1">
-                <div class="flex items-center space-x-1 overflow-x-auto text-xs font-medium">
-                    <button type="button" onclick="setNotifFilter('all')" id="notif-tab-all" class="px-3 py-1.5 rounded-lg bg-brand-600 text-white font-semibold transition">All</button>
-                    <button type="button" onclick="setNotifFilter('new_album')" id="notif-tab-new_album" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition">New Albums</button>
-                    <button type="button" onclick="setNotifFilter('new_song')" id="notif-tab-new_song" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition">New Songs</button>
-                    <button type="button" onclick="setNotifFilter('missing_songs')" id="notif-tab-missing_songs" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition">Missing Songs</button>
-                    <button type="button" onclick="setNotifFilter('history')" id="notif-tab-history" class="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition">Scan History</button>
+            <!-- Language Filter Chips (V2) -->
+            <div class="space-y-2">
+                <div class="flex items-center gap-1.5 overflow-x-auto text-[11px] pb-1 no-scrollbar">
+                    <span class="text-slate-400 font-semibold uppercase text-[10px] mr-1 shrink-0">Language:</span>
+                    <button type="button" onclick="setNotifLanguage('all')" id="lang-chip-all" class="px-2.5 py-1 rounded-full bg-brand-600 text-white font-semibold transition shrink-0">All</button>
+                    <button type="button" onclick="setNotifLanguage('telugu')" id="lang-chip-telugu" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0">Telugu</button>
+                    <button type="button" onclick="setNotifLanguage('tamil')" id="lang-chip-tamil" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0">Tamil</button>
+                    <button type="button" onclick="setNotifLanguage('hindi')" id="lang-chip-hindi" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0">Hindi</button>
+                    <button type="button" onclick="setNotifLanguage('kannada')" id="lang-chip-kannada" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0">Kannada</button>
+                    <button type="button" onclick="setNotifLanguage('malayalam')" id="lang-chip-malayalam" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0">Malayalam</button>
+                    <button type="button" onclick="setNotifLanguage('other')" id="lang-chip-other" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0">Other</button>
                 </div>
-                <button type="button" onclick="markAllNotificationsRead()" class="text-xs text-slate-400 hover:text-brand-400 transition flex items-center gap-1">
-                    <span>Mark all as read</span>
-                </button>
+
+                <!-- Category Filter Tabs & Actions -->
+                <div class="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-slate-800/80">
+                    <div class="flex items-center space-x-1 overflow-x-auto text-xs font-medium no-scrollbar">
+                        <button type="button" onclick="setNotifCategory('all')" id="notif-tab-all" class="px-2.5 py-1.5 rounded-lg bg-brand-600 text-white font-semibold transition shrink-0">All</button>
+                        <button type="button" onclick="setNotifCategory('new_album')" id="notif-tab-new_album" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0">New Albums</button>
+                        <button type="button" onclick="setNotifCategory('new_song')" id="notif-tab-new_song" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0">New Songs</button>
+                        <button type="button" onclick="setNotifCategory('missing_songs')" id="notif-tab-missing_songs" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0">Missing Songs</button>
+                        <button type="button" onclick="setNotifCategory('uncertain')" id="notif-tab-uncertain" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0">Uncertain</button>
+                        <button type="button" onclick="setNotifCategory('completed')" id="notif-tab-completed" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0">Completed</button>
+                        <button type="button" onclick="setNotifCategory('history')" id="notif-tab-history" class="px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0">Scan History</button>
+                    </div>
+                    <button type="button" onclick="markAllNotificationsRead()" class="text-xs text-slate-400 hover:text-brand-400 transition flex items-center gap-1 shrink-0">
+                        <span>Mark all read</span>
+                    </button>
+                </div>
             </div>
 
             <!-- Status Banner (Hidden by default, shown during scan or errors) -->
             <div id="notif-status-banner" class="hidden px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between"></div>
 
             <!-- Content Area -->
-            <div id="notification-list" class="space-y-3 overflow-y-auto pr-1 flex-1 min-h-[220px]">
+            <div id="notification-list" class="space-y-3 overflow-y-auto pr-1 flex-1 min-h-[240px]">
                 <div class="text-center py-8 text-slate-500 text-sm">Loading latest releases notifications...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Download Progress Modal (V2) -->
+    <div id="batch-download-modal" class="hidden fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl">
+            <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+                <div class="flex items-center space-x-2">
+                    <div class="w-8 h-8 rounded-lg bg-cyan-600/20 text-cyan-400 flex items-center justify-center">
+                        <i class="icon-download text-sm"></i>
+                    </div>
+                    <div>
+                        <h4 class="font-bold text-sm text-white" id="batch-dl-album-title">Batch Download</h4>
+                        <p class="text-[11px] text-slate-400" id="batch-dl-subtitle">Downloading authorized MP3 audio</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeBatchDownloadModal()" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="space-y-1.5">
+                <div class="flex items-center justify-between text-xs">
+                    <span id="batch-dl-status-text" class="text-slate-300">Preparing download queue...</span>
+                    <span id="batch-dl-percent" class="font-bold text-cyan-400">0%</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-700">
+                    <div id="batch-dl-progress-bar" class="bg-cyan-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- Download Log / Summary -->
+            <div id="batch-dl-log" class="max-h-36 overflow-y-auto space-y-1 text-xs font-mono bg-slate-950 p-3 rounded-xl border border-slate-800 text-slate-300">
+            </div>
+
+            <div class="flex items-center justify-between pt-1">
+                <span id="batch-dl-counts" class="text-xs text-slate-400">0 downloaded • 0 failed</span>
+                <div class="flex items-center space-x-2">
+                    <button type="button" id="btn-batch-dl-retry" onclick="retryFailedDownloads()" class="hidden px-3 py-1.5 bg-amber-600/20 text-amber-300 border border-amber-600/40 rounded-lg text-xs font-semibold hover:bg-amber-600/30 transition">Retry Failed</button>
+                    <button type="button" id="btn-batch-dl-done" onclick="closeBatchDownloadModal()" class="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition">Close</button>
+                </div>
             </div>
         </div>
     </div>
@@ -926,13 +985,17 @@
         // =========================================================================
         // Latest Releases Discovery Engine & Notification Panel Client Controller
         // =========================================================================
-        let currentNotifFilter = 'all';
+        // =========================================================================
+        // Latest Releases Discovery Engine V2 Client Controller
+        // =========================================================================
+        let currentNotifCategory = 'all';
+        let currentNotifLanguage = 'all';
 
         function toggleNotificationPanel() {
             const modal = document.getElementById('notification-modal');
             if (modal.classList.contains('hidden')) {
                 modal.classList.remove('hidden');
-                loadNotifications(currentNotifFilter);
+                loadNotifications();
                 fetchLatestScanStatus();
             } else {
                 closeNotificationPanel();
@@ -965,23 +1028,38 @@
             }
         }
 
-        function setNotifFilter(filter) {
-            currentNotifFilter = filter;
-            const tabIds = ['all', 'new_album', 'new_song', 'missing_songs', 'history'];
+        function setNotifLanguage(lang) {
+            currentNotifLanguage = lang.toLowerCase();
+            const chips = ['all', 'telugu', 'tamil', 'hindi', 'kannada', 'malayalam', 'other'];
+            chips.forEach(c => {
+                const el = document.getElementById(`lang-chip-${c}`);
+                if (!el) return;
+                if (c === currentNotifLanguage) {
+                    el.className = 'px-2.5 py-1 rounded-full bg-brand-600 text-white font-semibold transition shrink-0';
+                } else {
+                    el.className = 'px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 hover:text-white transition shrink-0';
+                }
+            });
+            loadNotifications();
+        }
+
+        function setNotifCategory(cat) {
+            currentNotifCategory = cat;
+            const tabIds = ['all', 'new_album', 'new_song', 'missing_songs', 'uncertain', 'completed', 'history'];
             tabIds.forEach(t => {
                 const btn = document.getElementById(`notif-tab-${t}`);
                 if (!btn) return;
-                if (t === filter) {
-                    btn.className = 'px-3 py-1.5 rounded-lg bg-brand-600 text-white font-semibold transition';
+                if (t === cat) {
+                    btn.className = 'px-2.5 py-1.5 rounded-lg bg-brand-600 text-white font-semibold transition shrink-0';
                 } else {
-                    btn.className = 'px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition';
+                    btn.className = 'px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition shrink-0';
                 }
             });
 
-            if (filter === 'history') {
+            if (cat === 'history') {
                 loadScanHistory();
             } else {
-                loadNotifications(filter);
+                loadNotifications();
             }
         }
 
@@ -993,24 +1071,50 @@
                 const lbl = document.getElementById('notif-last-scan-label');
                 if (data.last_scan && data.last_scan.completed_at) {
                     const dt = new Date(data.last_scan.completed_at * 1000);
-                    lbl.innerText = `Last checked: ${dt.toLocaleTimeString()} (${dt.toLocaleDateString()}) • Daily 09:00 AM IST`;
+                    const pages = data.last_scan.pages_checked || 1;
+                    lbl.innerText = `Last checked: ${dt.toLocaleTimeString()} (${dt.toLocaleDateString()}) • ${pages} pages • Daily 09:00 AM IST`;
                 } else {
                     lbl.innerText = `Source: naasongs.com.co • Daily 09:00 AM IST`;
                 }
             } catch (e) {}
         }
 
-        async function loadNotifications(filter) {
+        async function loadNotifications() {
+            if (currentNotifCategory === 'history') {
+                loadScanHistory();
+                return;
+            }
+
             const listContainer = document.getElementById('notification-list');
             listContainer.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm"><i class="icon-loader animate-spin mr-1.5"></i> Loading notifications...</div>';
 
             try {
-                const res = await fetch(`${API_BASE}/latest-releases/notifications?category=${encodeURIComponent(filter)}`);
+                const statusParam = currentNotifCategory === 'completed' ? 'completed' : 'active';
+                const url = `${API_BASE}/latest-releases/notifications?category=${encodeURIComponent(currentNotifCategory)}&language=${encodeURIComponent(currentNotifLanguage)}&status=${statusParam}`;
+                const res = await fetch(url);
                 if (!res.ok) throw new Error("Failed to load notifications");
                 const data = await res.json();
                 renderNotifications(data.notifications || []);
             } catch (e) {
                 listContainer.innerHTML = `<div class="text-center py-8 text-red-400 text-sm">Failed to load notifications: ${e.message}</div>`;
+            }
+        }
+
+        function getLanguageBadgeStyles(lang) {
+            const l = (lang || 'telugu').toLowerCase();
+            switch (l) {
+                case 'telugu':
+                    return 'bg-emerald-950/80 text-emerald-300 border-emerald-700/80';
+                case 'tamil':
+                    return 'bg-amber-950/80 text-amber-300 border-amber-700/80';
+                case 'hindi':
+                    return 'bg-purple-950/80 text-purple-300 border-purple-700/80';
+                case 'kannada':
+                    return 'bg-cyan-950/80 text-cyan-300 border-cyan-700/80';
+                case 'malayalam':
+                    return 'bg-rose-950/80 text-rose-300 border-rose-700/80';
+                default:
+                    return 'bg-slate-800 text-slate-300 border-slate-600';
             }
         }
 
@@ -1021,7 +1125,7 @@
                     <div class="text-center py-10 px-4 bg-slate-950/40 rounded-xl border border-slate-800">
                         <i class="icon-check-circle text-2xl text-emerald-400 mb-2 block"></i>
                         <p class="text-sm font-semibold text-slate-200">Catalog is Up to Date</p>
-                        <p class="text-xs text-slate-500 mt-1">No new or missing releases found in this category.</p>
+                        <p class="text-xs text-slate-500 mt-1">No pending releases found for the selected language and category.</p>
                     </div>
                 `;
                 return;
@@ -1030,7 +1134,7 @@
             let html = '';
             notifs.forEach(n => {
                 let badgeClass = 'bg-amber-900/40 text-amber-300 border-amber-800';
-                let typeLabel = n.notification_type.replace('_', ' ');
+                let typeLabel = (n.notification_type || 'NEW_ALBUM').replace('_', ' ');
                 if (n.notification_type === 'NEW_ALBUM') {
                     badgeClass = 'bg-emerald-900/40 text-emerald-300 border-emerald-800';
                 } else if (n.notification_type === 'MISSING_SONGS') {
@@ -1041,39 +1145,82 @@
                     badgeClass = 'bg-red-900/40 text-red-300 border-red-800';
                 }
 
+                const lang = n.language || 'Telugu';
+                const langBadgeStyle = getLanguageBadgeStyles(lang);
+
                 const cardBg = n.is_read ? 'bg-slate-950/40 border-slate-800 opacity-80' : 'bg-slate-950 border-slate-700/80 shadow-md';
                 const artHtml = n.artwork_url
                     ? `<img src="${n.artwork_url}" class="w-12 h-12 rounded-lg object-cover bg-slate-800 border border-slate-700 shrink-0" onerror="this.onerror=null;this.src='';this.className='hidden';">`
                     : `<div class="w-12 h-12 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-500 shrink-0"><i class="icon-disc text-xl"></i></div>`;
 
                 let songsHtml = '';
+                const downloadableSongs = [];
                 if (n.songs && n.songs.length > 0) {
                     songsHtml = `<div class="mt-2.5 pt-2 border-t border-slate-800/80 space-y-1">`;
-                    n.songs.forEach(s => {
+                    n.songs.forEach((s, sIdx) => {
                         let statusBadge = '';
                         if (s.exists_in_catalog) {
-                            statusBadge = `<span class="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded flex items-center gap-1">✓ In MusicData</span>`;
+                            statusBadge = `<span class="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">✓ In MusicData</span>`;
                         } else if (s.match_confidence === 'UNCERTAIN') {
-                            statusBadge = `<span class="text-[10px] bg-purple-900/50 text-purple-300 border border-purple-800 px-1.5 py-0.5 rounded">⚠ Uncertain Match</span>`;
+                            statusBadge = `<span class="text-[10px] bg-purple-900/50 text-purple-300 border border-purple-800 px-1.5 py-0.5 rounded shrink-0">⚠ Uncertain Match</span>`;
                         } else {
-                            statusBadge = `<span class="text-[10px] bg-amber-900/50 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded font-medium">★ Missing</span>`;
+                            statusBadge = `<span class="text-[10px] bg-amber-900/50 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded font-medium shrink-0">★ Missing</span>`;
                         }
 
-                        let linkHtml = s.source_audio_url
-                            ? `<a href="${s.source_audio_url}" target="_blank" rel="noopener" class="text-[11px] text-cyan-400 hover:underline flex items-center gap-0.5">Link ↗</a>`
-                            : `<span class="text-[10px] text-slate-500">Upcoming</span>`;
+                        if (!s.exists_in_catalog && s.source_audio_url) {
+                            downloadableSongs.push({
+                                url: s.source_audio_url,
+                                title: s.song_title,
+                                trackNumber: s.track_number || (sIdx + 1),
+                                songId: s.id
+                            });
+                        }
+
+                        let dlButtonHtml = '';
+                        if (s.source_audio_url) {
+                            dlButtonHtml = `
+                                <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url)}', '${encodeURIComponent(n.album_name)}', '${encodeURIComponent(s.song_title)}', ${s.track_number || (sIdx + 1)}, ${s.id || 0})" class="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium transition" title="Download MP3">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                    <span>Download</span>
+                                </button>
+                            `;
+                        } else {
+                            dlButtonHtml = `<span class="text-[10px] text-slate-500">Upcoming</span>`;
+                        }
 
                         songsHtml += `
-                            <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded hover:bg-slate-900/60 transition">
-                                <span class="text-slate-300 truncate max-w-[280px] sm:max-w-md">${s.song_title}</span>
+                            <div class="flex items-center justify-between text-xs py-1 px-1.5 rounded hover:bg-slate-900/60 transition gap-2">
+                                <span class="text-slate-300 truncate max-w-[240px] sm:max-w-xs">${s.song_title}</span>
                                 <div class="flex items-center space-x-2 shrink-0">
                                     ${statusBadge}
-                                    ${linkHtml}
+                                    ${dlButtonHtml}
                                 </div>
                             </div>
                         `;
                     });
                     songsHtml += `</div>`;
+                }
+
+                // Batch Download Button (Left side)
+                const missingCount = downloadableSongs.length;
+                let batchDlBtnHtml = '';
+                if (missingCount > 0) {
+                    const dlPayload = encodeURIComponent(JSON.stringify({
+                        albumName: n.album_name,
+                        tracks: downloadableSongs
+                    }));
+                    batchDlBtnHtml = `
+                        <button type="button" onclick="startBatchDownload('${dlPayload}')" class="px-3 py-1.5 bg-cyan-700/80 hover:bg-cyan-600 text-cyan-100 rounded-lg text-xs font-bold transition flex items-center gap-1.5 border border-cyan-500/40 shadow-sm">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                            <span>⬇ Download All (${missingCount})</span>
+                        </button>
+                    `;
+                } else {
+                    batchDlBtnHtml = `
+                        <span class="text-xs text-slate-500 flex items-center gap-1">
+                            <i class="icon-check text-emerald-400"></i> All songs in MusicData
+                        </span>
+                    `;
                 }
 
                 html += `
@@ -1084,6 +1231,7 @@
                                 <div>
                                     <div class="flex items-center gap-2 flex-wrap">
                                         <h4 class="font-bold text-sm sm:text-base text-white leading-snug">${n.album_name}</h4>
+                                        <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded border ${langBadgeStyle}">${lang}</span>
                                         <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${badgeClass}">${typeLabel}</span>
                                     </div>
                                     <p class="text-xs text-slate-400 mt-0.5">
@@ -1096,15 +1244,17 @@
 
                         ${songsHtml}
 
-                        <div class="pt-2 flex items-center justify-between border-t border-slate-800/60 text-xs">
-                            <div class="flex items-center space-x-2">
-                                ${n.source_url ? `<a href="${n.source_url}" target="_blank" rel="noopener" class="text-xs text-cyan-400 hover:text-cyan-300 underline font-medium">Open naasongs.com.co ↗</a>` : ''}
+                        <!-- Action Bar: Download All on LEFT, Add/Edit on RIGHT -->
+                        <div class="pt-2.5 flex items-center justify-between border-t border-slate-800/80 text-xs gap-2">
+                            <div>
+                                ${batchDlBtnHtml}
                             </div>
-                            <div class="flex items-center space-x-2">
-                                <button type="button" onclick="fillFormFromNotification('${encodeURIComponent(n.album_name)}', '${encodeURIComponent(n.music_director || '')}', ${n.year || 2026}, '${n.notification_type}')" class="px-2.5 py-1 bg-brand-700/60 hover:bg-brand-600 text-brand-100 rounded-lg text-xs font-semibold transition border border-brand-500/40">
+                            <div class="flex items-center space-x-2 shrink-0">
+                                ${n.source_url ? `<a href="${n.source_url}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-slate-300 underline hidden sm:inline mr-1">Source ↗</a>` : ''}
+                                <button type="button" onclick="fillFormFromNotification('${encodeURIComponent(n.album_name)}', '${encodeURIComponent(n.music_director || '')}', ${n.year || 2026}, '${n.notification_type}', '${encodeURIComponent(lang)}')" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-bold transition border border-brand-500 shadow-sm flex items-center gap-1">
                                     ${n.notification_type === 'NEW_ALBUM' ? '+ Add Album' : '✎ Edit in Manager'}
                                 </button>
-                                ${!n.is_read ? `<button type="button" onclick="markNotificationRead(${n.id})" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition">Mark Read</button>` : ''}
+                                ${!n.is_read ? `<button type="button" onclick="markNotificationRead(${n.id})" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition">Mark Read</button>` : ''}
                             </div>
                         </div>
                     </div>
@@ -1112,6 +1262,140 @@
             });
 
             listContainer.innerHTML = html;
+        }
+
+        // =========================================================================
+        // Batch & Single MP3 Download Handlers (V2)
+        // =========================================================================
+        let currentBatch = {
+            albumName: '',
+            tracks: [],
+            total: 0,
+            completed: 0,
+            failed: [],
+            inProgress: false
+        };
+
+        function downloadSingleTrack(rawUrl, rawAlbum, rawTitle, trackNum, songId) {
+            const url = decodeURIComponent(rawUrl);
+            const albumName = decodeURIComponent(rawAlbum);
+            const title = decodeURIComponent(rawTitle);
+
+            const downloadEndpoint = `${API_BASE}/latest-releases/download-track?url=${encodeURIComponent(url)}&album_name=${encodeURIComponent(albumName)}&song_title=${encodeURIComponent(title)}&track_number=${trackNum}`;
+            
+            // Trigger hidden anchor download
+            const a = document.createElement('a');
+            a.href = downloadEndpoint;
+            a.setAttribute('download', `${trackNum} - ${title}.mp3`);
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            // Update tracking in background
+            if (songId) {
+                fetch(`${API_BASE}/latest-releases/tracking/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ song_id: songId, status: 'DOWNLOADED_BY_USER' })
+                }).catch(() => {});
+            }
+        }
+
+        async function startBatchDownload(encodedPayload) {
+            const data = JSON.parse(decodeURIComponent(encodedPayload));
+            const albumName = data.albumName || 'Album';
+            const tracks = data.tracks || [];
+
+            if (tracks.length === 0) return;
+
+            currentBatch = {
+                albumName: albumName,
+                tracks: [...tracks],
+                total: tracks.length,
+                completed: 0,
+                failed: [],
+                inProgress: true
+            };
+
+            const modal = document.getElementById('batch-download-modal');
+            modal.classList.remove('hidden');
+            document.getElementById('batch-dl-album-title').innerText = `Batch Download: ${albumName}`;
+            document.getElementById('batch-dl-subtitle').innerText = `Preparing to download ${tracks.length} MP3 tracks...`;
+            document.getElementById('btn-batch-dl-retry').classList.add('hidden');
+            
+            const logBox = document.getElementById('batch-dl-log');
+            logBox.innerHTML = '';
+
+            await processBatchQueue();
+        }
+
+        async function processBatchQueue() {
+            const progressBar = document.getElementById('batch-dl-progress-bar');
+            const percentLabel = document.getElementById('batch-dl-percent');
+            const statusText = document.getElementById('batch-dl-status-text');
+            const countsText = document.getElementById('batch-dl-counts');
+            const logBox = document.getElementById('batch-dl-log');
+
+            for (let i = 0; i < currentBatch.tracks.length; i++) {
+                const track = currentBatch.tracks[i];
+                const currentNum = i + 1;
+                statusText.innerText = `Downloading ${currentNum}/${currentBatch.total}: "${track.title}"...`;
+                
+                try {
+                    const downloadEndpoint = `${API_BASE}/latest-releases/download-track?url=${encodeURIComponent(track.url)}&album_name=${encodeURIComponent(currentBatch.albumName)}&song_title=${encodeURIComponent(track.title)}&track_number=${track.trackNumber}`;
+                    
+                    const a = document.createElement('a');
+                    a.href = downloadEndpoint;
+                    a.setAttribute('download', `${track.trackNumber} - ${track.title}.mp3`);
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+
+                    currentBatch.completed++;
+                    logBox.innerHTML += `<p class="text-emerald-400">✓ [${currentNum}/${currentBatch.total}] ${track.title}.mp3</p>`;
+                    logBox.scrollTop = logBox.scrollHeight;
+
+                    if (track.songId) {
+                        fetch(`${API_BASE}/latest-releases/tracking/update`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ song_id: track.songId, status: 'DOWNLOADED_BY_USER' })
+                        }).catch(() => {});
+                    }
+
+                    // Respectful pause between downloads to avoid browser throttling
+                    await new Promise(r => setTimeout(r, 850));
+
+                } catch (e) {
+                    currentBatch.failed.push(track);
+                    logBox.innerHTML += `<p class="text-rose-400">❌ [${currentNum}/${currentBatch.total}] ${track.title}: ${e.message}</p>`;
+                }
+
+                const pct = Math.round((currentNum / currentBatch.total) * 100);
+                progressBar.style.width = `${pct}%`;
+                percentLabel.innerText = `${pct}%`;
+                countsText.innerText = `${currentBatch.completed} downloaded • ${currentBatch.failed.length} failed`;
+            }
+
+            statusText.innerText = currentBatch.failed.length > 0 ? "Batch download finished with issues" : "Batch download completed successfully!";
+            if (currentBatch.failed.length > 0) {
+                document.getElementById('btn-batch-dl-retry').classList.remove('hidden');
+            }
+            currentBatch.inProgress = false;
+        }
+
+        async function retryFailedDownloads() {
+            if (currentBatch.failed.length === 0) return;
+            currentBatch.tracks = [...currentBatch.failed];
+            currentBatch.failed = [];
+            currentBatch.total = currentBatch.tracks.length;
+            currentBatch.completed = 0;
+            document.getElementById('btn-batch-dl-retry').classList.add('hidden');
+            await processBatchQueue();
+        }
+
+        function closeBatchDownloadModal() {
+            document.getElementById('batch-download-modal').classList.add('hidden');
         }
 
         async function loadScanHistory() {
@@ -1147,7 +1431,7 @@
                                     <span class="text-[11px] text-slate-500">(${dur})</span>
                                 </div>
                                 <p class="text-[11px] text-slate-400 mt-0.5">
-                                    Triggered by: <span class="text-slate-300">${s.locked_by}</span> • Checked: ${s.albums_found} albums • New Albums: ${s.new_albums_count} • New Songs: ${s.new_songs_count}
+                                    Triggered by: <span class="text-slate-300">${s.locked_by}</span> • Pages: <span class="text-slate-300">${s.pages_checked || 1}</span> • Checked: ${s.albums_found} albums • New Albums: ${s.new_albums_count} • New Songs: ${s.new_songs_count}
                                 </p>
                                 ${s.error_message ? `<p class="text-[11px] text-rose-400 mt-1 font-mono">${s.error_message}</p>` : ''}
                             </div>
@@ -1172,7 +1456,7 @@
             txt.innerText = 'Scanning...';
 
             banner.className = 'px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between bg-amber-950/70 border border-amber-800 text-amber-200 block';
-            banner.innerHTML = `<span><i class="icon-loader animate-spin mr-1.5"></i> Scanning naasongs.com.co for latest releases...</span>`;
+            banner.innerHTML = `<span><i class="icon-loader animate-spin mr-1.5"></i> Scanning up to 20 pages on naasongs.com.co...</span>`;
 
             try {
                 const res = await fetch(`${API_BASE}/latest-releases/check-now`, { method: 'POST' });
@@ -1185,8 +1469,8 @@
                     throw new Error(data.error || data.detail || 'Scan failed');
                 } else {
                     banner.className = 'px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between bg-emerald-950/70 border border-emerald-800 text-emerald-200 block';
-                    banner.innerHTML = `<span>✓ Scan completed in ${data.duration_seconds}s! Checked ${data.albums_found} albums (${data.new_albums_count} new albums, ${data.new_songs_count} new songs).</span>`;
-                    loadNotifications(currentNotifFilter);
+                    banner.innerHTML = `<span>✓ Scan completed in ${data.duration_seconds}s! Checked ${data.albums_found} albums across ${data.pages_checked || 1} pages (${data.new_albums_count} new albums, ${data.new_songs_count} new songs).</span>`;
+                    loadNotifications();
                     loadUnreadNotificationCount();
                     fetchLatestScanStatus();
                 }
@@ -1204,7 +1488,7 @@
         async function markNotificationRead(id) {
             try {
                 await fetch(`${API_BASE}/latest-releases/notifications/${id}/read`, { method: 'POST' });
-                loadNotifications(currentNotifFilter);
+                loadNotifications();
                 loadUnreadNotificationCount();
             } catch (e) {}
         }
@@ -1212,14 +1496,15 @@
         async function markAllNotificationsRead() {
             try {
                 await fetch(`${API_BASE}/latest-releases/notifications/mark-all-read`, { method: 'POST' });
-                loadNotifications(currentNotifFilter);
+                loadNotifications();
                 loadUnreadNotificationCount();
             } catch (e) {}
         }
 
-        function fillFormFromNotification(rawAlbumName, rawDirector, year, notifType) {
+        function fillFormFromNotification(rawAlbumName, rawDirector, year, notifType, rawLang) {
             const albumName = decodeURIComponent(rawAlbumName);
             const director = decodeURIComponent(rawDirector);
+            const lang = decodeURIComponent(rawLang || 'Telugu');
             closeNotificationPanel();
 
             if (notifType === 'NEW_ALBUM') {

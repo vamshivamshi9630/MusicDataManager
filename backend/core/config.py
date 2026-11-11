@@ -29,5 +29,6 @@ class Settings:
         self.LATEST_RELEASES_DB_PATH: str = os.environ.get("LATEST_RELEASES_DB_PATH", "data/latest_releases.db")
         self.CRON_SECRET: str = os.environ.get("CRON_SECRET", "musicdata-cron-secret-change-in-production")
         self.LATEST_RELEASES_ENABLED: bool = os.environ.get("LATEST_RELEASES_ENABLED", "1").lower() in ("1", "true")
+        self.LATEST_RELEASES_MAX_PAGES: int = int(os.environ.get("LATEST_RELEASES_MAX_PAGES", 20))
 
 settings = Settings()

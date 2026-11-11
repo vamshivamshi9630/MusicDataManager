@@ -37,9 +37,10 @@ class SongComparator:
             logger.warning(f"Failed to fetch catalog albums: {e}")
             return []
 
-    def find_matching_catalog_album(self, discovered_album_name: str) -> Optional[Dict[str, Any]]:
+    def find_matching_catalog_album(self, discovered_album_name: str, discovered_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Finds matching album in MusicData catalog using exact and high-confidence normalized match.
+        If discovered_language is provided and catalog specifies language, requires language compatibility.
         """
         norm_disc = normalize_text(discovered_album_name)
         if not norm_disc:
@@ -47,16 +48,26 @@ class SongComparator:
 
         catalog = self.get_catalog_albums()
 
+        def language_compatible(cat_alb: Dict[str, Any]) -> bool:
+            if not discovered_language:
+                return True
+            cat_lang = cat_alb.get("language")
+            if not cat_lang:
+                return True
+            return str(cat_lang).strip().lower() == str(discovered_language).strip().lower()
+
         # 1. Exact or exact-normalized match
         for alb in catalog:
             cat_name = alb.get("name", "")
-            if normalize_text(cat_name) == norm_disc:
+            if normalize_text(cat_name) == norm_disc and language_compatible(alb):
                 return alb
 
         # 2. High similarity match (e.g. >= 0.90)
         best_match = None
         best_score = 0.0
         for alb in catalog:
+            if not language_compatible(alb):
+                continue
             cat_name = alb.get("name", "")
             score = calculate_similarity_ratio(norm_disc, normalize_text(cat_name))
             if score > best_score:
@@ -107,7 +118,7 @@ class SongComparator:
         Performs album-level and incremental song-level comparison.
         Updates discovered album and songs with match data and returns appropriate NotificationType (or None).
         """
-        catalog_match = self.find_matching_catalog_album(discovered.album_name)
+        catalog_match = self.find_matching_catalog_album(discovered.album_name, discovered.language)
 
         if not catalog_match:
             # =================================================================

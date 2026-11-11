@@ -24,6 +24,18 @@ class MatchConfidence(str, Enum):
     UNCERTAIN = "UNCERTAIN"# 0.65 - 0.87 (shown for manual review)
     NONE = "NONE"          # < 0.65 (treated as new/missing)
 
+class LanguageConfidence(str, Enum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    UNKNOWN = "UNKNOWN"
+
+class NotificationResolutionStatus(str, Enum):
+    PENDING = "PENDING"
+    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
+    COMPLETED = "COMPLETED"
+    IGNORED = "IGNORED"
+
 @dataclass
 class DiscoveredSong:
     song_title: str
@@ -64,6 +76,8 @@ class DiscoveredAlbum:
     source_url: str
     music_director: str = "Unknown"
     year: int = 2026
+    language: str = "Telugu"
+    language_confidence: LanguageConfidence = LanguageConfidence.UNKNOWN
     director: Optional[str] = None
     cast_crew: Optional[str] = None
     artwork_url: Optional[str] = None
@@ -76,6 +90,7 @@ class DiscoveredAlbum:
     id: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        conf_val = self.language_confidence.value if hasattr(self.language_confidence, 'value') else str(self.language_confidence)
         return {
             "id": self.id,
             "album_name": self.album_name,
@@ -83,6 +98,8 @@ class DiscoveredAlbum:
             "source_url": self.source_url,
             "music_director": self.music_director,
             "year": self.year,
+            "language": self.language,
+            "language_confidence": conf_val,
             "director": self.director,
             "cast_crew": self.cast_crew,
             "artwork_url": self.artwork_url,
@@ -105,6 +122,8 @@ class NotificationItem:
     artwork_url: Optional[str] = None
     music_director: str = "Unknown"
     year: int = 2026
+    language: str = "Telugu"
+    resolution_status: str = "PENDING"
     source_url: str = ""
     songs: List[Dict[str, Any]] = field(default_factory=list)
     missing_count: int = 0
@@ -123,6 +142,8 @@ class NotificationItem:
             "artwork_url": self.artwork_url,
             "music_director": self.music_director,
             "year": self.year,
+            "language": self.language,
+            "resolution_status": self.resolution_status,
             "source_url": self.source_url,
             "songs": self.songs,
             "missing_count": self.missing_count,
@@ -140,6 +161,9 @@ class ScanRecord:
     albums_found: int = 0
     new_albums_count: int = 0
     new_songs_count: int = 0
+    pages_checked: int = 1
+    resolved_notifications_count: int = 0
+    failed_pages: List[str] = field(default_factory=list)
     error_message: Optional[str] = None
     locked_by: str = "cron"
 
@@ -152,6 +176,9 @@ class ScanRecord:
             "albums_found": self.albums_found,
             "new_albums_count": self.new_albums_count,
             "new_songs_count": self.new_songs_count,
+            "pages_checked": self.pages_checked,
+            "resolved_notifications_count": self.resolved_notifications_count,
+            "failed_pages": self.failed_pages,
             "error_message": self.error_message,
             "locked_by": self.locked_by
         }

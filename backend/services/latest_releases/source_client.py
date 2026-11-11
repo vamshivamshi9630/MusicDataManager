@@ -61,5 +61,10 @@ class SourceClient:
     def fetch_homepage(self) -> Optional[str]:
         return self.fetch_html(self.BASE_URL)
 
+    def fetch_page(self, page_number: int) -> Optional[str]:
+        if page_number <= 1:
+            return self.fetch_homepage()
+        return self.fetch_html(f"{self.BASE_URL}/page/{page_number}/")
+
     def fetch_album_page(self, album_url: str) -> Optional[str]:
         return self.fetch_html(album_url)

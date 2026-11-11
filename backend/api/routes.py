@@ -517,6 +517,13 @@ def sync_execute(req: SyncExecuteRequest, _auth=Depends(check_token)):
             # Invalidate cloud catalog cache so new album appears immediately in autocomplete & edit
             cloud_catalog_service.refresh_catalog()
 
+            # Live notification reconciliation
+            try:
+                from backend.services.latest_releases.reconciliation import reconcile_active_notifications
+                reconcile_active_notifications()
+            except Exception as recon_e:
+                logger.warning(f"Post-sync reconciliation warning: {recon_e}")
+
             return {
                 "success": True,
                 "status": "COMPLETED",

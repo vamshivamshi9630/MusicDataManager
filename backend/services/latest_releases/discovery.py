@@ -1,17 +1,20 @@
 import time
 import logging
 from typing import Dict, Any, Optional, List
+from backend.core.config import settings
 from backend.services.latest_releases.models import (
     NotificationType,
     TrackingStatus,
     MatchConfidence,
     DiscoveredAlbum,
-    DiscoveredSong
+    DiscoveredSong,
+    NotificationResolutionStatus
 )
 from backend.services.latest_releases.db import get_latest_releases_db, LatestReleasesDB
 from backend.services.latest_releases.source_client import SourceClient
 from backend.services.latest_releases.album_parser import AlbumParser
 from backend.services.latest_releases.song_comparator import SongComparator
+from backend.services.latest_releases.reconciliation import reconcile_active_notifications
 
 logger = logging.getLogger("musicdata.latest_releases.discovery")
 
@@ -19,19 +22,20 @@ class LatestReleasesDiscoveryEngine:
     """
     Main orchestration engine for Latest Releases Discovery.
     Safe, rate-limited, distributed-lock protected, and database backed.
+    Supports 15-20 page paginated discovery, language differentiation, and live reconciliation.
     """
 
     def __init__(self, db: Optional[LatestReleasesDB] = None, source_client: Optional[SourceClient] = None):
         self.db = db or get_latest_releases_db()
         self.source_client = source_client or SourceClient()
 
-    def run_scan(self, locked_by: str = "cron", limit_albums: int = 15) -> Dict[str, Any]:
+    def run_scan(self, locked_by: str = "cron", max_pages: Optional[int] = None, limit_albums: Optional[int] = None) -> Dict[str, Any]:
         """
-        Executes a complete discovery scan against naasongs.com.co.
+        Executes a complete discovery scan against naasongs.com.co across paginated indexes (pages 1 to 20).
         Protected by database-backed distributed lock.
         """
         # 1. Acquire Distributed Scan Lock
-        if not self.db.acquire_scan_lock(locked_by=locked_by, timeout_minutes=15):
+        if not self.db.acquire_scan_lock(locked_by=locked_by, timeout_minutes=25):
             lock_info = self.db.get_lock_status()
             logger.info(f"Scan rejected: another scan is active (locked by {lock_info.get('locked_by')}).")
             return {
@@ -46,33 +50,68 @@ class LatestReleasesDiscoveryEngine:
         albums_found_count = 0
         new_albums_count = 0
         new_songs_count = 0
+        pages_checked = 0
+        resolved_count = 0
+        failed_pages: List[str] = []
         scan_error = None
 
+        pages_limit = max_pages or getattr(settings, "LATEST_RELEASES_MAX_PAGES", 20)
+
         try:
-            logger.info(f"[DISCOVERY] Scan #{scan_id} initiated by '{locked_by}'...")
-            
-            # 2. Fetch Homepage
-            hp_html = self.source_client.fetch_homepage()
-            if not hp_html:
-                scan_error = "Could not fetch naasongs.com.co homepage (timeout or unreachable)."
-                logger.error(f"[DISCOVERY] {scan_error}")
-                self._record_scan_failed_notification(scan_error)
-                return {
-                    "success": False,
-                    "status": "FAILED",
-                    "error": scan_error,
-                    "scan_id": scan_id
-                }
+            logger.info(f"[DISCOVERY] Scan #{scan_id} initiated by '{locked_by}' (target up to {pages_limit} pages)...")
 
-            # 3. Parse candidate albums from homepage
-            candidates = AlbumParser.parse_homepage_albums(hp_html)
-            albums_found_count = len(candidates)
-            logger.info(f"[DISCOVERY] Found {albums_found_count} candidate album links on homepage.")
+            # 2. Paginated crawl of candidate album links
+            seen_urls = set()
+            all_candidates: List[Dict[str, Any]] = []
 
+            for page_num in range(1, pages_limit + 1):
+                pages_checked += 1
+                try:
+                    page_html = self.source_client.fetch_page(page_num)
+                    if not page_html:
+                        if page_num == 1:
+                            scan_error = "Could not fetch naasongs.com.co homepage (timeout or unreachable)."
+                            logger.error(f"[DISCOVERY] {scan_error}")
+                            self._record_scan_failed_notification(scan_error)
+                            return {
+                                "success": False,
+                                "status": "FAILED",
+                                "error": scan_error,
+                                "scan_id": scan_id
+                            }
+                        else:
+                            # Reached end of pagination (e.g. 404 on page 18)
+                            logger.info(f"[DISCOVERY] Reached end of pagination at page {page_num}.")
+                            break
+
+                    page_candidates = AlbumParser.parse_homepage_albums(page_html)
+                    if not page_candidates:
+                        logger.info(f"[DISCOVERY] No album links found on page {page_num}; stopping pagination.")
+                        break
+
+                    new_on_page = 0
+                    for cand in page_candidates:
+                        u = cand.get("url")
+                        if u and u not in seen_urls:
+                            seen_urls.add(u)
+                            all_candidates.append(cand)
+                            new_on_page += 1
+
+                    logger.info(f"[DISCOVERY] Page {page_num}: found {len(page_candidates)} links ({new_on_page} new). Total candidates: {len(all_candidates)}")
+
+                    if limit_albums and len(all_candidates) >= limit_albums:
+                        all_candidates = all_candidates[:limit_albums]
+                        break
+
+                except Exception as page_err:
+                    logger.warning(f"[DISCOVERY] Error scraping page {page_num}: {page_err}")
+                    failed_pages.append(f"page/{page_num}")
+
+            albums_found_count = len(all_candidates)
             comparator = SongComparator()
 
-            # 4. Process each candidate album up to limit
-            for cand in candidates[:limit_albums]:
+            # 3. Process candidate albums
+            for cand in all_candidates:
                 album_url = cand.get("url")
                 if not album_url:
                     continue
@@ -90,7 +129,7 @@ class LatestReleasesDiscoveryEngine:
                     if not discovered.artwork_url and cand.get("thumbnail"):
                         discovered.artwork_url = cand.get("thumbnail")
 
-                    # Run comparison against MusicData catalog
+                    # Run comparison against MusicData catalog (incorporates album language)
                     notif_type, analyzed = comparator.compare_album(discovered)
 
                     # Save album and songs in DB
@@ -118,25 +157,26 @@ class LatestReleasesDiscoveryEngine:
                             })
 
                         # Construct clean notification title & message
+                        lang_badge = f"[{analyzed.language}] " if analyzed.language else ""
                         if notif_type == NotificationType.NEW_ALBUM:
                             title = f"New Album: {analyzed.album_name}"
-                            message = f"{len(analyzed.songs)} songs available • Music by {analyzed.music_director} ({analyzed.year})"
+                            message = f"{lang_badge}{len(analyzed.songs)} songs available • Music by {analyzed.music_director} ({analyzed.year})"
                             new_albums_count += 1
                         elif notif_type == NotificationType.NEW_SONG:
                             missing_title = missing_songs[0].song_title if missing_songs else "New Track"
                             title = f"New Song: {analyzed.album_name}"
-                            message = f"'{missing_title}' released • Missing from MusicData"
+                            message = f"{lang_badge}'{missing_title}' released • Missing from MusicData"
                             new_songs_count += 1
                         elif notif_type == NotificationType.MISSING_SONGS:
                             title = f"Missing Songs: {analyzed.album_name}"
                             names_snippet = ", ".join([s.song_title for s in missing_songs[:2]])
                             if len(missing_songs) > 2:
                                 names_snippet += f" and {len(missing_songs) - 2} more"
-                            message = f"{missing_count} songs missing ({names_snippet})"
+                            message = f"{lang_badge}{missing_count} songs missing ({names_snippet})"
                             new_songs_count += missing_count
                         elif notif_type == NotificationType.ALBUM_UPDATED:
                             title = f"Album Updated: {analyzed.album_name}"
-                            message = f"New artwork or updated tracklist discovered."
+                            message = f"{lang_badge}New artwork or updated tracklist discovered."
                         else:
                             title = f"Catalog Update: {analyzed.album_name}"
                             message = "New details discovered."
@@ -152,21 +192,33 @@ class LatestReleasesDiscoveryEngine:
                             year=analyzed.year,
                             source_url=analyzed.source_url,
                             songs_list=songs_payload,
-                            missing_count=missing_count
+                            missing_count=missing_count,
+                            language=analyzed.language,
+                            resolution_status=NotificationResolutionStatus.PENDING.value
                         )
                 except Exception as album_err:
                     logger.warning(f"Error processing album {album_url}: {album_err}")
 
+            # 4. Run Live Reconciliation post-scan
+            try:
+                recon_res = reconcile_active_notifications(self.db, comparator)
+                resolved_count = recon_res.get("resolved_notifications", 0)
+                logger.info(f"[DISCOVERY] Reconciliation resolved {resolved_count} notifications.")
+            except Exception as recon_err:
+                logger.warning(f"[DISCOVERY] Post-scan reconciliation warning: {recon_err}")
+
             duration = round(time.time() - start_time, 2)
-            logger.info(f"[DISCOVERY] Scan completed in {duration}s: {albums_found_count} checked, {new_albums_count} new albums, {new_songs_count} new songs.")
+            logger.info(f"[DISCOVERY] Scan completed in {duration}s: {albums_found_count} checked across {pages_checked} pages, {new_albums_count} new albums, {new_songs_count} new songs, {resolved_count} resolved.")
             return {
                 "success": True,
                 "status": "COMPLETED",
                 "scan_id": scan_id,
                 "duration_seconds": duration,
+                "pages_checked": pages_checked,
                 "albums_found": albums_found_count,
                 "new_albums_count": new_albums_count,
-                "new_songs_count": new_songs_count
+                "new_songs_count": new_songs_count,
+                "resolved_notifications_count": resolved_count
             }
 
         except Exception as e:
@@ -185,6 +237,9 @@ class LatestReleasesDiscoveryEngine:
                 albums_found=albums_found_count,
                 new_albums=new_albums_count,
                 new_songs=new_songs_count,
+                pages_checked=pages_checked,
+                resolved_notifications=resolved_count,
+                failed_pages=failed_pages,
                 error_message=scan_error
             )
             self.db.release_scan_lock(locked_by=locked_by)
@@ -202,7 +257,9 @@ class LatestReleasesDiscoveryEngine:
                 year=2026,
                 source_url="https://naasongs.com.co",
                 songs_list=[],
-                missing_count=0
+                missing_count=0,
+                language="Unknown",
+                resolution_status=NotificationResolutionStatus.PENDING.value
             )
         except Exception:
             pass
