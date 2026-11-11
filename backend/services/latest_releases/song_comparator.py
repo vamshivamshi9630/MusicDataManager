@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import urllib.parse
 from typing import List, Dict, Any, Optional, Tuple
 from backend.services.fuzzy_search import normalize_text, calculate_similarity_ratio
 from backend.services.catalog import cloud_catalog_service, CatalogLookupError
@@ -8,6 +9,7 @@ from backend.services.latest_releases.models import (
     NotificationType,
     TrackingStatus,
     MatchConfidence,
+    MatchClassification,
     DiscoveredAlbum,
     DiscoveredSong
 )
@@ -72,10 +74,12 @@ class SongComparator:
         if not album_name:
             return []
 
-        # If running in local mode with repo root available:
-        if not is_cloud_mode():
+        # Use local repository only when explicitly configured via MUSICDATA_REPOSITORY_ROOT in Local Mode
+        explicit_local_root = os.environ.get("MUSICDATA_REPOSITORY_ROOT", "").strip()
+        if not is_cloud_mode() and explicit_local_root:
             try:
-                rc = get_repo_context()
+                from backend.core.repository import RepositoryContext
+                rc = RepositoryContext(root_override=explicit_local_root)
                 album_dir = rc.get_album_path(album_name)
                 if album_dir.exists():
                     songs = []
@@ -123,6 +127,7 @@ class SongComparator:
                 song.catalog_song_title = None
                 song.catalog_song_id = None
                 song.match_confidence = MatchConfidence.NONE
+                song.match_classification = MatchClassification.MISSING
                 song.match_score = 0.0
                 song.tracking_status = TrackingStatus.MISSING_FROM_MUSICDATA
 
@@ -139,23 +144,46 @@ class SongComparator:
         missing_songs: List[DiscoveredSong] = []
 
         for disc_song in discovered.songs:
-            is_matched, conf_str, score, best_cat_song = cloud_catalog_service.match_song_to_catalog(
-                disc_song.song_title or disc_song.normalized_title,
-                catalog_songs
-            )
-            disc_song.match_score = round(score, 3)
+            src_filename = None
+            if disc_song.source_audio_url:
+                src_filename = urllib.parse.unquote(disc_song.source_audio_url.split("/")[-1].split("?")[0])
 
-            if is_matched:
+            res = cloud_catalog_service.match_song_detailed(
+                source_title=disc_song.song_title or disc_song.normalized_title,
+                catalog_songs=catalog_songs,
+                source_singer=getattr(disc_song, "singer", None),
+                source_filename=src_filename
+            )
+            best_cat_song = res["matched_song"]
+            classification = res["classification"]
+            conf_str = res["confidence"]
+            disc_song.match_score = round(res["score"], 3)
+            disc_song.match_reason = res["reason"]
+            disc_song.catalog_version_candidates = [
+                c.get("title") for c in res.get("version_candidates", []) if c.get("title")
+            ]
+
+            if classification == "EXACT_MATCH":
                 disc_song.exists_in_catalog = True
                 disc_song.catalog_song_title = best_cat_song.get("title") if best_cat_song else None
                 disc_song.catalog_song_id = best_cat_song.get("id") if best_cat_song else None
                 disc_song.match_confidence = MatchConfidence.EXACT if conf_str == "EXACT" else MatchConfidence.HIGH
+                disc_song.match_classification = MatchClassification.EXACT_MATCH
                 disc_song.tracking_status = TrackingStatus.ADDED_TO_MUSICDATA
-            elif conf_str == "UNCERTAIN":
+            elif classification == "POSSIBLE_VERSION_MATCH":
                 disc_song.exists_in_catalog = False
                 disc_song.catalog_song_title = best_cat_song.get("title") if best_cat_song else None
                 disc_song.catalog_song_id = best_cat_song.get("id") if best_cat_song else None
                 disc_song.match_confidence = MatchConfidence.UNCERTAIN
+                disc_song.match_classification = MatchClassification.POSSIBLE_VERSION_MATCH
+                disc_song.tracking_status = TrackingStatus.DOWNLOAD_SUGGESTED
+                missing_songs.append(disc_song)
+            elif classification == "UNCERTAIN":
+                disc_song.exists_in_catalog = False
+                disc_song.catalog_song_title = best_cat_song.get("title") if best_cat_song else None
+                disc_song.catalog_song_id = best_cat_song.get("id") if best_cat_song else None
+                disc_song.match_confidence = MatchConfidence.UNCERTAIN
+                disc_song.match_classification = MatchClassification.UNCERTAIN
                 disc_song.tracking_status = TrackingStatus.DOWNLOAD_SUGGESTED
                 missing_songs.append(disc_song)
             else:
@@ -163,6 +191,7 @@ class SongComparator:
                 disc_song.catalog_song_title = None
                 disc_song.catalog_song_id = None
                 disc_song.match_confidence = MatchConfidence.NONE
+                disc_song.match_classification = MatchClassification.MISSING
                 disc_song.tracking_status = TrackingStatus.MISSING_FROM_MUSICDATA
                 missing_songs.append(disc_song)
 

@@ -92,13 +92,15 @@ class TestLatestReleasesParser(unittest.TestCase):
         self.assertEqual(len(album.songs), 2)
 
         s1 = album.songs[0]
-        self.assertEqual(s1.song_title, "Chitti Chitti Cheema")
+        self.assertEqual(s1.song_title, "Chitti Chitti Cheema Song")
         self.assertEqual(s1.track_number, 1)
+        self.assertEqual(s1.singer, "GV Prakash Kumar, Ramya Behara")
         self.assertIn("Chitti_Chitti_Cheema.mp3", s1.source_audio_url)
 
         s2 = album.songs[1]
-        self.assertEqual(s2.song_title, "Radhe Radhe")
+        self.assertEqual(s2.song_title, "Radhe Radhe Song")
         self.assertEqual(s2.track_number, 2)
+        self.assertEqual(s2.singer, "Sid Sriram")
         self.assertIn("Radhe_Radhe.mp3", s2.source_audio_url)
 
     def test_parse_upcoming_album_plain_text(self):
@@ -108,7 +110,8 @@ class TestLatestReleasesParser(unittest.TestCase):
         self.assertEqual(album.album_name, "Dada")
         self.assertEqual(album.music_director, "SS Thaman")
         self.assertEqual(len(album.songs), 1)
-        self.assertEqual(album.songs[0].song_title, "Dada Dhamaka")
+        self.assertEqual(album.songs[0].song_title, "Dada Dhamaka Song")
+        self.assertFalse(album.songs[0].link_available)
         self.assertIsNone(album.songs[0].source_audio_url)
 
     def test_clean_song_title(self):

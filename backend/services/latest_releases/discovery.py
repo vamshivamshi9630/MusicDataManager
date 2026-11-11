@@ -72,7 +72,6 @@ class LatestReleasesDiscoveryEngine:
                         if page_num == 1:
                             scan_error = "Could not fetch naasongs.com.co homepage (timeout or unreachable)."
                             logger.error(f"[DISCOVERY] {scan_error}")
-                            self._record_scan_failed_notification(scan_error)
                             return {
                                 "success": False,
                                 "status": "FAILED",
@@ -109,6 +108,8 @@ class LatestReleasesDiscoveryEngine:
 
             albums_found_count = len(all_candidates)
             comparator = SongComparator()
+            processed_albums_count = 0
+            album_error_count = 0
 
             # 3. Process candidate albums
             for cand in all_candidates:
@@ -131,27 +132,50 @@ class LatestReleasesDiscoveryEngine:
 
                     # Run comparison against MusicData catalog (incorporates album language)
                     notif_type, analyzed = comparator.compare_album(discovered)
+                    processed_albums_count += 1
 
                     # Save album and songs in DB
                     album_id = self.db.upsert_discovered_album(analyzed)
                     analyzed.id = album_id
 
                     for song in analyzed.songs:
-                        self.db.upsert_discovered_song(album_id, song)
+                        song_id = self.db.upsert_discovered_song(album_id, song)
+                        song.id = song_id
 
                     # Create Notification if applicable
                     if notif_type:
                         missing_songs = [s for s in analyzed.songs if not s.exists_in_catalog]
                         missing_count = len(missing_songs)
+                        version_verify_songs = [
+                            s for s in missing_songs
+                            if getattr(s.match_classification, "value", s.match_classification) == "POSSIBLE_VERSION_MATCH"
+                            or s.match_confidence == MatchConfidence.UNCERTAIN
+                        ]
+                        genuine_missing_songs = [s for s in missing_songs if s not in version_verify_songs]
 
                         # Format songs details list for UI rendering
                         songs_payload = []
                         for s in analyzed.songs:
+                            cls_val = s.match_classification.value if hasattr(s.match_classification, "value") else str(s.match_classification)
                             songs_payload.append({
+                                "id": s.id,
                                 "song_title": s.song_title,
+                                "track_number": s.track_number,
+                                "singer": getattr(s, "singer", None),
+                                "available_bitrate": getattr(s, "available_bitrate", None),
+                                "available_bitrates": getattr(s, "available_bitrates", []),
+                                "download_links": getattr(s, "download_links", {}),
+                                "source_page_url": getattr(s, "source_page_url", None) or analyzed.source_url,
+                                "link_available": bool(getattr(s, "link_available", False) or s.source_audio_url),
+                                "download_authorized": bool(getattr(s, "download_authorized", False)),
                                 "exists_in_catalog": s.exists_in_catalog,
                                 "match_confidence": s.match_confidence.value,
+                                "match_classification": cls_val,
                                 "match_score": s.match_score,
+                                "match_reason": getattr(s, "match_reason", None),
+                                "catalog_song_title": s.catalog_song_title,
+                                "catalog_song_id": s.catalog_song_id,
+                                "catalog_version_candidates": getattr(s, "catalog_version_candidates", []),
                                 "source_audio_url": s.source_audio_url,
                                 "tracking_status": s.tracking_status.value
                             })
@@ -165,14 +189,25 @@ class LatestReleasesDiscoveryEngine:
                         elif notif_type == NotificationType.NEW_SONG:
                             missing_title = missing_songs[0].song_title if missing_songs else "New Track"
                             title = f"New Song: {analyzed.album_name}"
-                            message = f"{lang_badge}'{missing_title}' released • Missing from MusicData"
+                            if version_verify_songs:
+                                message = f"{lang_badge}'{missing_title}' needs version verification against MusicData"
+                            else:
+                                message = f"{lang_badge}'{missing_title}' released • Missing from MusicData"
                             new_songs_count += 1
                         elif notif_type == NotificationType.MISSING_SONGS:
                             title = f"Missing Songs: {analyzed.album_name}"
-                            names_snippet = ", ".join([s.song_title for s in missing_songs[:2]])
-                            if len(missing_songs) > 2:
-                                names_snippet += f" and {len(missing_songs) - 2} more"
-                            message = f"{lang_badge}{missing_count} songs missing ({names_snippet})"
+                            if version_verify_songs and genuine_missing_songs:
+                                names_snippet = ", ".join([s.song_title for s in genuine_missing_songs[:2]])
+                                if len(genuine_missing_songs) > 2:
+                                    names_snippet += f" and {len(genuine_missing_songs) - 2} more"
+                                message = f"{lang_badge}{len(genuine_missing_songs)} missing ({names_snippet}) • {len(version_verify_songs)} version match to verify"
+                            elif version_verify_songs and not genuine_missing_songs:
+                                message = f"{lang_badge}{len(version_verify_songs)} track(s) need version verification"
+                            else:
+                                names_snippet = ", ".join([s.song_title for s in missing_songs[:2]])
+                                if len(missing_songs) > 2:
+                                    names_snippet += f" and {len(missing_songs) - 2} more"
+                                message = f"{lang_badge}{missing_count} songs missing ({names_snippet})"
                             new_songs_count += missing_count
                         elif notif_type == NotificationType.ALBUM_UPDATED:
                             title = f"Album Updated: {analyzed.album_name}"
@@ -197,7 +232,18 @@ class LatestReleasesDiscoveryEngine:
                             resolution_status=NotificationResolutionStatus.PENDING.value
                         )
                 except Exception as album_err:
+                    album_error_count += 1
                     logger.warning(f"Error processing album {album_url}: {album_err}")
+
+            if albums_found_count > 0 and processed_albums_count == 0 and album_error_count > 0:
+                scan_error = f"All {album_error_count} candidate album(s) failed during catalog comparison."
+                logger.error(f"[DISCOVERY] {scan_error}")
+                return {
+                    "success": False,
+                    "status": "FAILED",
+                    "scan_id": scan_id,
+                    "error": scan_error
+                }
 
             # 4. Run Live Reconciliation post-scan
             try:

@@ -1,0 +1,62 @@
+name: Latest Releases Daily Scan
+
+on:
+  schedule:
+    # 03:30 UTC daily = 09:00 AM IST (Asia/Kolkata, UTC+5:30)
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: latest-releases-discovery-scan
+  cancel-in-progress: false
+
+jobs:
+  discovery-scan:
+    name: Run Discovery Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CLOUD_MODE: "1"
+      LATEST_RELEASES_ENABLED: "1"
+      REQUIRE_POSTGRES: "1"
+      GITHUB_OWNER: vamshivamshi9630
+      GITHUB_REPOSITORY: MusicData
+      GITHUB_BRANCH: main
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install system and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpq5 ca-certificates
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -c "import psycopg2, bs4, PIL, fastapi; print('Dependencies verified successfully')"
+
+      - name: Verify required secret configuration
+        env:
+          HAS_DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
+        run: |
+          if [ "$HAS_DATABASE_URL" != "true" ]; then
+            echo "::error::Missing required repository secret DATABASE_URL. Configure Settings -> Secrets and variables -> Actions -> DATABASE_URL."
+            exit 1
+          fi
+
+      - name: Run Latest Releases Discovery Engine CLI
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SCHEDULER_ACTOR: github_actions_cron
+        run: |
+          python -m backend.services.latest_releases.cli scan

@@ -1,12 +1,17 @@
 import os
 import json
+import logging
 import shutil
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, Header
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from backend.core.config import settings
 from backend.core.repository import RepositoryContext, CloudRepository, PathTraversalError
@@ -209,9 +214,6 @@ def get_album_details(album_name: str, language: Optional[str] = None):
             raise HTTPException(status_code=404, detail=f"Album '{album_name}' not found in cloud catalog.")
         
         art_name = match.get("name")
-        part = match.get("partition", "0-9")
-        has_art = bool(match.get("image"))
-        art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{part}/{art_name}/{art_name}.png" if has_art else None
 
         # Fetch authoritative album JSON
         meta_songs = []
@@ -223,6 +225,18 @@ def get_album_details(album_name: str, language: Optional[str] = None):
         except Exception as e:
             logger.warning(f"Could not load authoritative album JSON for '{art_name}': {e}")
 
+        image_val = meta_album.get("image") or match.get("image")
+        has_art = bool(image_val)
+        art_url = None
+        encoded_album = urllib.parse.quote(art_name, safe="")
+        if has_art:
+            img_clean = str(image_val).lstrip("/")
+            if "/" in img_clean:
+                art_path = urllib.parse.quote(img_clean, safe="/")
+            else:
+                art_path = f"{encoded_album}/{urllib.parse.quote(img_clean, safe='')}"
+            art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{art_path}"
+
         songs = []
         for idx, s in enumerate(meta_songs):
             title = s.get("title", "")
@@ -231,7 +245,11 @@ def get_album_details(album_name: str, language: Optional[str] = None):
             duration = s.get("duration", "")
             singers = ", ".join(s.get("singers", [])) if isinstance(s.get("singers"), list) else (s.get("singers") or "")
             composer = s.get("composer") or meta_album.get("musicDirector") or match.get("artist") or "Unknown"
-            audio_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{part}/{art_name}/{filename}"
+            if "/" in filename:
+                audio_path = urllib.parse.quote(filename.lstrip("/"), safe="/")
+            else:
+                audio_path = f"{encoded_album}/{urllib.parse.quote(filename, safe='')}"
+            audio_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{audio_path}"
             songs.append({
                 "title": title,
                 "filename": filename,
@@ -297,10 +315,32 @@ def get_album_details(album_name: str, language: Optional[str] = None):
         "album_name": album_name,
         "metadata": info,
         "has_artwork": has_artwork,
-        "artwork_url": rc.build_raw_image_url(album_name, f"{album_name}.png") if has_artwork else None,
+        "artwork_url": f"/api/albums/{urllib.parse.quote(album_name, safe='')}/artwork" if has_artwork else None,
         "song_count": len(songs),
         "songs": songs
     }
+
+@router.get("/albums/{album_name}/artwork")
+def get_local_album_artwork(album_name: str):
+    if is_cloud_mode():
+        match = cloud_catalog_service.find_canonical_album(album_name)
+        if not match:
+            raise HTTPException(status_code=404, detail=f"Album '{album_name}' not found.")
+        art_name = match.get("name")
+        img_val = match.get("image") or f"{art_name}.png"
+        art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{urllib.parse.quote(art_name, safe='')}/{urllib.parse.quote(str(img_val).lstrip('/'), safe='/')}"
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=art_url)
+
+    rc = get_repo_context()
+    try:
+        album_dir = rc.get_album_path(album_name)
+    except PathTraversalError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    artwork_file = album_dir / f"{album_name}.png"
+    if not artwork_file.exists():
+        raise HTTPException(status_code=404, detail=f"Artwork for '{album_name}' not found.")
+    return FileResponse(str(artwork_file), media_type="image/png")
 
 @router.post("/albums/create-or-select")
 def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)):

@@ -595,11 +595,26 @@
                     document.getElementById('input-release-date').value = data.metadata.releaseDate || '';
                     document.getElementById('auto-png-name').innerText = `${data.album_name || albumName}.png`;
 
+                    const placeholder = document.getElementById('artwork-placeholder-icon');
+                    const img = document.getElementById('artwork-img-element');
                     if (data.has_artwork && data.artwork_url) {
-                        document.getElementById('artwork-placeholder-icon').classList.add('hidden');
-                        const img = document.getElementById('artwork-img-element');
+                        img.onerror = () => {
+                            img.classList.add('hidden');
+                            placeholder.classList.remove('hidden');
+                        };
+                        img.onload = () => {
+                            placeholder.classList.add('hidden');
+                            img.classList.remove('hidden');
+                        };
                         img.src = data.artwork_url;
+                        placeholder.classList.add('hidden');
                         img.classList.remove('hidden');
+                    } else {
+                        img.onerror = null;
+                        img.onload = null;
+                        img.src = '';
+                        img.classList.add('hidden');
+                        placeholder.classList.remove('hidden');
                     }
 
                     state.existingSongs = (data.songs || []).map((s, idx) => ({
@@ -1309,52 +1324,109 @@
                 let songsHtml = '';
                 const downloadableSongs = [];
                 if (n.songs && n.songs.length > 0) {
-                    songsHtml = `<div class="mt-2.5 pt-2 border-t border-slate-800/80 space-y-1">`;
-                    n.songs.forEach((s, sIdx) => {
+                    const renderTrackRow = (s, sIdx) => {
+                        const cls = s.match_classification || (s.exists_in_catalog ? 'EXACT_MATCH' : (s.match_confidence === 'UNCERTAIN' ? 'UNCERTAIN' : 'MISSING'));
+                        const isVersionVerify = (cls === 'POSSIBLE_VERSION_MATCH');
+                        const isUncertain = (cls === 'UNCERTAIN' || (!isVersionVerify && s.match_confidence === 'UNCERTAIN' && !s.exists_in_catalog));
+                        const hasAuthorizedDl = Boolean(s.source_audio_url && (s.download_authorized !== false) && (s.link_available !== false));
+
                         let statusBadge = '';
                         if (s.exists_in_catalog) {
-                            statusBadge = `<span class="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">✓ In MusicData</span>`;
-                        } else if (s.match_confidence === 'UNCERTAIN') {
+                            statusBadge = `<span class="text-[10px] bg-emerald-950/70 text-emerald-300 border border-emerald-800/70 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">✓ In MusicData</span>`;
+                        } else if (isVersionVerify) {
+                            statusBadge = `<span class="text-[10px] bg-amber-950/80 text-amber-300 border border-amber-700/80 px-1.5 py-0.5 rounded shrink-0">⚡ Version Match</span>`;
+                        } else if (isUncertain) {
                             statusBadge = `<span class="text-[10px] bg-purple-900/50 text-purple-300 border border-purple-800 px-1.5 py-0.5 rounded shrink-0">⚠ Uncertain Match</span>`;
                         } else {
-                            statusBadge = `<span class="text-[10px] bg-amber-900/50 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded font-medium shrink-0">★ Missing</span>`;
+                            statusBadge = `<span class="text-[10px] bg-rose-950/60 text-rose-300 border border-rose-800/70 px-1.5 py-0.5 rounded font-medium shrink-0">★ Missing</span>`;
                         }
 
-                        if (!s.exists_in_catalog && s.match_confidence !== 'UNCERTAIN' && s.source_audio_url) {
+                        if (!s.exists_in_catalog && !isVersionVerify && !isUncertain && hasAuthorizedDl) {
                             downloadableSongs.push({
                                 url: s.source_audio_url,
                                 title: s.song_title,
                                 trackNumber: s.track_number || (sIdx + 1),
-                                songId: s.id
+                                songId: s.id,
+                                language: lang
                             });
                         }
 
                         let dlButtonHtml = '';
                         if (s.exists_in_catalog) {
                             dlButtonHtml = `<span class="text-[10px] text-emerald-400 font-medium">✓ In Catalog</span>`;
-                        } else if (s.match_confidence === 'UNCERTAIN') {
-                            dlButtonHtml = `<span class="text-[10px] text-purple-400 font-medium">Review Match</span>`;
-                        } else if (s.source_audio_url) {
+                        } else if ((isVersionVerify || isUncertain) && hasAuthorizedDl) {
                             dlButtonHtml = `
-                                <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url)}', '${encodeURIComponent(n.album_name)}', '${encodeURIComponent(s.song_title)}', ${s.track_number || (sIdx + 1)}, ${s.id || 0})" class="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium transition" title="Download MP3">
+                                <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url)}', '${encodeURIComponent(n.album_name)}', '${encodeURIComponent(s.song_title)}', ${s.track_number || (sIdx + 1)}, ${s.id || 0}, '${encodeURIComponent(lang)}')" class="text-[10px] text-amber-300 hover:text-amber-200 flex items-center gap-1 font-medium transition border border-amber-800/60 bg-amber-950/40 px-1.5 py-0.5 rounded" title="Verify version before downloading">
+                                    <span>Verify & Download</span>
+                                </button>
+                            `;
+                        } else if (isVersionVerify || isUncertain) {
+                            dlButtonHtml = n.source_url
+                                ? `<a href="${escapeHtml(n.source_url)}" target="_blank" rel="noopener" class="text-[10px] text-purple-300 hover:text-purple-200 underline">Review Source ↗</a>`
+                                : `<span class="text-[10px] text-purple-400 font-medium">Review Match</span>`;
+                        } else if (hasAuthorizedDl) {
+                            dlButtonHtml = `
+                                <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url)}', '${encodeURIComponent(n.album_name)}', '${encodeURIComponent(s.song_title)}', ${s.track_number || (sIdx + 1)}, ${s.id || 0}, '${encodeURIComponent(lang)}')" class="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium transition" title="Download MP3">
                                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
                                     <span>Download</span>
                                 </button>
                             `;
+                        } else if (s.source_page_url || n.source_url) {
+                            dlButtonHtml = `<a href="${escapeHtml(s.source_page_url || n.source_url)}" target="_blank" rel="noopener" class="text-[10px] text-slate-400 hover:text-slate-200 underline">Source ↗</a>`;
                         } else {
                             dlButtonHtml = `<span class="text-[10px] text-slate-500">Upcoming</span>`;
                         }
 
-                        songsHtml += `
-                            <div class="flex items-center justify-between text-xs py-1 px-1.5 rounded hover:bg-slate-900/60 transition gap-2">
-                                <span class="text-slate-300 truncate max-w-[240px] sm:max-w-xs">${s.song_title}</span>
-                                <div class="flex items-center space-x-2 shrink-0">
-                                    ${statusBadge}
-                                    ${dlButtonHtml}
+                        const metaParts = [];
+                        if (s.singer) metaParts.push(`🎤 ${escapeHtml(s.singer)}`);
+                        if (s.available_bitrate) metaParts.push(`<span class="text-cyan-400/90">${escapeHtml(s.available_bitrate)}</span>`);
+                        if ((isVersionVerify || isUncertain) && s.catalog_song_title) {
+                            metaParts.push(`<span class="text-amber-300/90">Catalog: "${escapeHtml(s.catalog_song_title)}"</span>`);
+                        }
+                        const metaLine = metaParts.length > 0 ? `<div class="text-[10px] text-slate-400 truncate mt-0.5 pl-5">${metaParts.join(' • ')}</div>` : '';
+
+                        return `
+                            <div class="py-1.5 px-2 rounded hover:bg-slate-900/60 transition">
+                                <div class="flex items-center justify-between text-xs gap-2">
+                                    <span class="text-slate-200 truncate max-w-[240px] sm:max-w-xs">
+                                        <span class="text-slate-500 font-mono mr-1">${String(s.track_number || (sIdx + 1)).padStart(2, '0')}.</span>${escapeHtml(s.song_title)}
+                                    </span>
+                                    <div class="flex items-center space-x-2 shrink-0">
+                                        ${statusBadge}
+                                        ${dlButtonHtml}
+                                    </div>
                                 </div>
+                                ${metaLine}
                             </div>
                         `;
+                    };
+
+                    const missingGroup = [];
+                    const verifyGroup = [];
+                    const existingGroup = [];
+                    n.songs.forEach((s, idx) => {
+                        const cls = s.match_classification || (s.exists_in_catalog ? 'EXACT_MATCH' : (s.match_confidence === 'UNCERTAIN' ? 'UNCERTAIN' : 'MISSING'));
+                        if (s.exists_in_catalog) existingGroup.push({ s, idx });
+                        else if (cls === 'POSSIBLE_VERSION_MATCH' || cls === 'UNCERTAIN' || s.match_confidence === 'UNCERTAIN') verifyGroup.push({ s, idx });
+                        else missingGroup.push({ s, idx });
                     });
+
+                    songsHtml = `<div class="mt-2.5 pt-2 border-t border-slate-800/80 space-y-2">`;
+                    if (missingGroup.length > 0) {
+                        songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-rose-400/90 px-2 mb-0.5">Missing Tracks (${missingGroup.length})</p>`;
+                        songsHtml += missingGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
+                        songsHtml += `</div>`;
+                    }
+                    if (verifyGroup.length > 0) {
+                        songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-amber-400/90 px-2 mb-0.5">Version Verification Needed (${verifyGroup.length})</p>`;
+                        songsHtml += verifyGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
+                        songsHtml += `</div>`;
+                    }
+                    if (existingGroup.length > 0) {
+                        songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-emerald-400/90 px-2 mb-0.5">Existing in MusicData (${existingGroup.length})</p>`;
+                        songsHtml += existingGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
+                        songsHtml += `</div>`;
+                    }
                     songsHtml += `</div>`;
                 }
 
@@ -1433,12 +1505,13 @@
             inProgress: false
         };
 
-        function downloadSingleTrack(rawUrl, rawAlbum, rawTitle, trackNum, songId) {
+        function downloadSingleTrack(rawUrl, rawAlbum, rawTitle, trackNum, songId, rawLang) {
             const url = decodeURIComponent(rawUrl);
             const albumName = decodeURIComponent(rawAlbum);
             const title = decodeURIComponent(rawTitle);
+            const langParam = rawLang ? `&language=${encodeURIComponent(decodeURIComponent(rawLang))}` : '';
 
-            const downloadEndpoint = `${API_BASE}/latest-releases/download-track?url=${encodeURIComponent(url)}&album_name=${encodeURIComponent(albumName)}&song_title=${encodeURIComponent(title)}&track_number=${trackNum}`;
+            const downloadEndpoint = `${API_BASE}/latest-releases/download-track?url=${encodeURIComponent(url)}&album_name=${encodeURIComponent(albumName)}&song_title=${encodeURIComponent(title)}&track_number=${trackNum}${langParam}`;
             
             // Trigger hidden anchor download
             const a = document.createElement('a');
@@ -1499,7 +1572,8 @@
                 statusText.innerText = `Downloading ${currentNum}/${currentBatch.total}: "${track.title}"...`;
                 
                 try {
-                    const downloadEndpoint = `${API_BASE}/latest-releases/download-track?url=${encodeURIComponent(track.url)}&album_name=${encodeURIComponent(currentBatch.albumName)}&song_title=${encodeURIComponent(track.title)}&track_number=${track.trackNumber}`;
+                    const langParam = track.language ? `&language=${encodeURIComponent(track.language)}` : '';
+                    const downloadEndpoint = `${API_BASE}/latest-releases/download-track?url=${encodeURIComponent(track.url)}&album_name=${encodeURIComponent(currentBatch.albumName)}&song_title=${encodeURIComponent(track.title)}&track_number=${track.trackNumber}${langParam}`;
                     
                     const a = document.createElement('a');
                     a.href = downloadEndpoint;
@@ -1668,7 +1742,7 @@
                 setAlbumWorkflowMode('add');
                 const nameInput = document.getElementById('input-album-name');
                 const dirInput = document.getElementById('input-music-director');
-                const yearInput = document.getElementById('input-release-year');
+                const yearInput = document.getElementById('input-year');
                 if (nameInput) { nameInput.value = albumName; nameInput.dispatchEvent(new Event('input')); }
                 if (dirInput) dirInput.value = director || '';
                 if (yearInput) yearInput.value = year || 2026;

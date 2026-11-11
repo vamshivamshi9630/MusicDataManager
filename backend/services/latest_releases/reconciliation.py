@@ -70,16 +70,29 @@ def reconcile_active_notifications(
                 continue
 
             disc_title = song.get("song_title") or song.get("normalized_title") or ""
-            is_matched, conf_str, score, best_cat_song = cloud_catalog_service.match_song_to_catalog(disc_title, catalog_songs)
+            res = cloud_catalog_service.match_song_detailed(
+                disc_title,
+                catalog_songs,
+                source_singer=song.get("singer")
+            )
+            best_cat_song = res["matched_song"]
 
-            if is_matched:
+            if res["exists_in_catalog"]:
                 song["exists_in_catalog"] = True
                 song["catalog_song_title"] = best_cat_song.get("title") if best_cat_song else None
                 song["catalog_song_id"] = best_cat_song.get("id") if best_cat_song else None
-                song["match_confidence"] = conf_str
-                song["match_score"] = round(score, 3)
+                song["match_confidence"] = res["confidence"]
+                song["match_classification"] = res["classification"]
+                song["match_score"] = round(res["score"], 3)
+                song["match_reason"] = res["reason"]
                 song["tracking_status"] = TrackingStatus.ADDED_TO_MUSICDATA.value
                 changed = True
+            elif res["classification"] == "POSSIBLE_VERSION_MATCH":
+                song["match_confidence"] = MatchConfidence.UNCERTAIN.value
+                song["match_classification"] = "POSSIBLE_VERSION_MATCH"
+                song["catalog_song_title"] = best_cat_song.get("title") if best_cat_song else None
+                song["match_score"] = round(res["score"], 3)
+                song["match_reason"] = res["reason"]
 
         new_missing_count = sum(1 for s in songs if not s.get("exists_in_catalog"))
 

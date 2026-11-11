@@ -3,6 +3,7 @@ import json
 import time
 import hashlib
 import sqlite3
+import urllib.parse
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 from backend.core.config import settings
@@ -22,10 +23,23 @@ class LatestReleasesDB:
     Supports Render PostgreSQL (via DATABASE_URL) with seamless SQLite fallback for offline local development.
     """
 
-    def __init__(self, database_url: Optional[str] = None, sqlite_path: Optional[str] = None):
-        self.raw_url = database_url if database_url is not None else (settings.DATABASE_URL or "")
+    def __init__(
+        self,
+        database_url: Optional[str] = None,
+        sqlite_path: Optional[str] = None,
+        require_postgres: Optional[bool] = None
+    ):
+        env_db_url = os.environ.get("DATABASE_URL", "")
+        self.raw_url = database_url if database_url is not None else (env_db_url or settings.DATABASE_URL or "")
+        self.require_postgres = (
+            require_postgres if require_postgres is not None
+            else os.environ.get("REQUIRE_POSTGRES", "").strip().lower() in ("1", "true")
+        )
         self.is_postgres = self.raw_url.startswith("postgres://") or self.raw_url.startswith("postgresql://")
-        
+
+        if self.require_postgres and not self.is_postgres:
+            raise RuntimeError("PostgreSQL is required (REQUIRE_POSTGRES=1), but DATABASE_URL is missing or not a PostgreSQL connection string.")
+
         # Render provides postgres:// which psycopg2 prefers as postgresql://
         if self.is_postgres and self.raw_url.startswith("postgres://"):
             self.pg_url = self.raw_url.replace("postgres://", "postgresql://", 1)
@@ -43,10 +57,17 @@ class LatestReleasesDB:
             try:
                 import psycopg2
                 import psycopg2.extras
-                return psycopg2.connect(self.pg_url)
+                connect_kwargs = {}
+                if "sslmode=" not in self.pg_url.lower():
+                    hostname = (urllib.parse.urlparse(self.pg_url).hostname or "").lower()
+                    if hostname and hostname not in ("localhost", "127.0.0.1") and "." in hostname:
+                        connect_kwargs["sslmode"] = "require"
+                return psycopg2.connect(self.pg_url, **connect_kwargs)
             except Exception as e:
-                # If PostgreSQL fails to connect, fallback to SQLite to prevent complete downtime
-                print(f"[LatestReleasesDB] PostgreSQL connection failed ({e}), falling back to SQLite.")
+                if self.require_postgres:
+                    raise RuntimeError(f"PostgreSQL connection failed ({type(e).__name__}). Refusing SQLite fallback.") from None
+                # Fallback to SQLite only when PostgreSQL is not strictly required
+                print(f"[LatestReleasesDB] PostgreSQL connection failed ({type(e).__name__}), falling back to SQLite.")
                 self.is_postgres = False
 
         conn = sqlite3.connect(str(self.sqlite_path))
@@ -177,6 +198,7 @@ class LatestReleasesDB:
                 cols = [r[1].lower() for r in cur.fetchall()]
                 return col.lower() in cols
 
+        bool_default = "BOOLEAN DEFAULT FALSE" if self.is_postgres else "INTEGER DEFAULT 0"
         migrations = [
             ("discovered_albums", "language", "TEXT DEFAULT 'Telugu'"),
             ("discovered_albums", "language_confidence", "VARCHAR(32) DEFAULT 'UNKNOWN'"),
@@ -185,6 +207,13 @@ class LatestReleasesDB:
             ("discovery_scans", "pages_checked", "INT DEFAULT 1"),
             ("discovery_scans", "resolved_notifications_count", "INT DEFAULT 0"),
             ("discovery_scans", "failed_pages", "TEXT"),
+            ("discovered_songs", "singer", "TEXT"),
+            ("discovered_songs", "available_bitrate", "TEXT"),
+            ("discovered_songs", "download_links_json", "TEXT"),
+            ("discovered_songs", "link_available", bool_default),
+            ("discovered_songs", "download_authorized", bool_default),
+            ("discovered_songs", "match_classification", "VARCHAR(64) DEFAULT 'MISSING'"),
+            ("discovered_songs", "match_reason", "TEXT"),
         ]
 
         for table, col, col_def in migrations:
@@ -201,7 +230,7 @@ class LatestReleasesDB:
 
     def acquire_scan_lock(self, locked_by: str = "cron", timeout_minutes: int = 15) -> bool:
         """
-        Attempt to acquire distributed scan lock.
+        Attempt to acquire distributed scan lock atomically.
         Returns True if acquired, False if an active scan is already running.
         """
         now = time.time()
@@ -209,6 +238,20 @@ class LatestReleasesDB:
         conn = self._get_connection()
         try:
             cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute("""
+                    INSERT INTO latest_releases_lock (lock_name, locked_at, locked_by, expires_at)
+                    VALUES ('global_scan', %s, %s, %s)
+                    ON CONFLICT (lock_name) DO UPDATE
+                    SET locked_at = EXCLUDED.locked_at,
+                        locked_by = EXCLUDED.locked_by,
+                        expires_at = EXCLUDED.expires_at
+                    WHERE latest_releases_lock.expires_at IS NULL OR latest_releases_lock.expires_at <= %s;
+                """, (now, locked_by, expires_at, now))
+                acquired = (cur.rowcount == 1)
+                conn.commit()
+                return acquired
+
             cur.execute("SELECT lock_name, locked_at, locked_by, expires_at FROM latest_releases_lock WHERE lock_name = 'global_scan';")
             row = cur.fetchone()
 
@@ -218,29 +261,16 @@ class LatestReleasesDB:
                     # Scan is actively running and has not expired
                     return False
                 # Lock expired, take over
-                if self.is_postgres:
-                    cur.execute("""
-                        UPDATE latest_releases_lock
-                        SET locked_at = %s, locked_by = %s, expires_at = %s
-                        WHERE lock_name = 'global_scan';
-                    """, (now, locked_by, expires_at))
-                else:
-                    cur.execute("""
-                        UPDATE latest_releases_lock
-                        SET locked_at = ?, locked_by = ?, expires_at = ?
-                        WHERE lock_name = 'global_scan';
-                    """, (now, locked_by, expires_at))
+                cur.execute("""
+                    UPDATE latest_releases_lock
+                    SET locked_at = ?, locked_by = ?, expires_at = ?
+                    WHERE lock_name = 'global_scan';
+                """, (now, locked_by, expires_at))
             else:
-                if self.is_postgres:
-                    cur.execute("""
-                        INSERT INTO latest_releases_lock (lock_name, locked_at, locked_by, expires_at)
-                        VALUES ('global_scan', %s, %s, %s);
-                    """, (now, locked_by, expires_at))
-                else:
-                    cur.execute("""
-                        INSERT INTO latest_releases_lock (lock_name, locked_at, locked_by, expires_at)
-                        VALUES ('global_scan', ?, ?, ?);
-                    """, (now, locked_by, expires_at))
+                cur.execute("""
+                    INSERT INTO latest_releases_lock (lock_name, locked_at, locked_by, expires_at)
+                    VALUES ('global_scan', ?, ?, ?);
+                """, (now, locked_by, expires_at))
 
             conn.commit()
             return True
@@ -472,6 +502,14 @@ class LatestReleasesDB:
                 """, (album_id, song.normalized_title))
             row = cur.fetchone()
 
+            dl_links_json = json.dumps(getattr(song, "download_links", {}) or {})
+            cls_val = song.match_classification.value if hasattr(getattr(song, "match_classification", None), "value") else str(getattr(song, "match_classification", "MISSING"))
+            singer_val = getattr(song, "singer", None)
+            bitrate_val = getattr(song, "available_bitrate", None)
+            link_avail = bool(getattr(song, "link_available", False) or song.source_audio_url)
+            dl_auth = bool(getattr(song, "download_authorized", False))
+            reason_val = getattr(song, "match_reason", None)
+
             if row:
                 song_id = row[0]
                 # Preserve user download tracking if set
@@ -484,48 +522,62 @@ class LatestReleasesDB:
                         SET song_title = %s, track_number = %s, source_audio_url = %s,
                             exists_in_catalog = %s, catalog_song_title = %s, catalog_song_id = %s,
                             match_confidence = %s, match_score = %s, tracking_status = %s,
+                            singer = %s, available_bitrate = %s, download_links_json = %s,
+                            link_available = %s, download_authorized = %s,
+                            match_classification = %s, match_reason = %s,
                             last_checked_at = %s
                         WHERE id = %s;
                     """, (song.song_title, song.track_number, song.source_audio_url,
                           song.exists_in_catalog, song.catalog_song_title, song.catalog_song_id,
                           song.match_confidence.value, song.match_score, effective_status,
-                          now, song_id))
+                          singer_val, bitrate_val, dl_links_json, link_avail, dl_auth,
+                          cls_val, reason_val, now, song_id))
                 else:
                     cur.execute("""
                         UPDATE discovered_songs
                         SET song_title = ?, track_number = ?, source_audio_url = ?,
                             exists_in_catalog = ?, catalog_song_title = ?, catalog_song_id = ?,
                             match_confidence = ?, match_score = ?, tracking_status = ?,
+                            singer = ?, available_bitrate = ?, download_links_json = ?,
+                            link_available = ?, download_authorized = ?,
+                            match_classification = ?, match_reason = ?,
                             last_checked_at = ?
                         WHERE id = ?;
                     """, (song.song_title, song.track_number, song.source_audio_url,
                           1 if song.exists_in_catalog else 0, song.catalog_song_title, song.catalog_song_id,
                           song.match_confidence.value, song.match_score, effective_status,
-                          now, song_id))
+                          singer_val, bitrate_val, dl_links_json, 1 if link_avail else 0, 1 if dl_auth else 0,
+                          cls_val, reason_val, now, song_id))
             else:
                 if self.is_postgres:
                     cur.execute("""
                         INSERT INTO discovered_songs (
                             album_id, song_title, normalized_title, track_number, source_audio_url,
                             exists_in_catalog, catalog_song_title, catalog_song_id, match_confidence,
-                            match_score, tracking_status, first_discovered_at, last_checked_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+                            match_score, tracking_status, singer, available_bitrate, download_links_json,
+                            link_available, download_authorized, match_classification, match_reason,
+                            first_discovered_at, last_checked_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
                     """, (album_id, song.song_title, song.normalized_title, song.track_number,
                           song.source_audio_url, song.exists_in_catalog, song.catalog_song_title,
                           song.catalog_song_id, song.match_confidence.value, song.match_score,
-                          song.tracking_status.value, now, now))
+                          song.tracking_status.value, singer_val, bitrate_val, dl_links_json,
+                          link_avail, dl_auth, cls_val, reason_val, now, now))
                     song_id = cur.fetchone()[0]
                 else:
                     cur.execute("""
                         INSERT INTO discovered_songs (
                             album_id, song_title, normalized_title, track_number, source_audio_url,
                             exists_in_catalog, catalog_song_title, catalog_song_id, match_confidence,
-                            match_score, tracking_status, first_discovered_at, last_checked_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            match_score, tracking_status, singer, available_bitrate, download_links_json,
+                            link_available, download_authorized, match_classification, match_reason,
+                            first_discovered_at, last_checked_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """, (album_id, song.song_title, song.normalized_title, song.track_number,
                           song.source_audio_url, 1 if song.exists_in_catalog else 0, song.catalog_song_title,
                           song.catalog_song_id, song.match_confidence.value, song.match_score,
-                          song.tracking_status.value, now, now))
+                          song.tracking_status.value, singer_val, bitrate_val, dl_links_json,
+                          1 if link_avail else 0, 1 if dl_auth else 0, cls_val, reason_val, now, now))
                     song_id = cur.lastrowid
 
             conn.commit()

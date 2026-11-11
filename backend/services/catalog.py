@@ -328,6 +328,153 @@ class CloudCatalogService:
 
         return None
 
+    PAREN_VERSION_TOKENS = {
+        "promo": "promo",
+        "promo song": "promo",
+        "promo version": "promo",
+        "teaser": "teaser",
+        "teaser song": "teaser",
+        "glimpse": "glimpse",
+        "full": "full",
+        "full song": "full",
+        "full version": "full",
+        "female": "female",
+        "female version": "female",
+        "male": "male",
+        "male version": "male",
+        "duet": "duet",
+        "duet version": "duet",
+        "sad": "sad",
+        "sad version": "sad",
+        "happy": "happy",
+        "reprise": "reprise",
+        "unplugged": "unplugged",
+        "acoustic": "acoustic",
+        "remix": "remix",
+        "bgm": "bgm",
+        "theme": "theme",
+        "instrumental": "instrumental",
+        "extended": "extended",
+        "slowed": "slowed",
+        "slowed reverb": "slowed",
+        "slowed and reverb": "slowed",
+        "lofi": "lofi",
+        "karaoke": "karaoke",
+        "lyrical": "lyrical",
+        "lyric": "lyrical",
+        "lyrical version": "lyrical",
+        "short": "short",
+        "bit": "bit",
+        "trailer": "trailer",
+    }
+
+    STANDALONE_VERSION_WORDS = (
+        "promo", "teaser", "glimpse", "reprise", "unplugged", "remix", "karaoke"
+    )
+
+    @classmethod
+    def parse_song_title_components(cls, title: str) -> Dict[str, Any]:
+        """
+        Extracts canonical base core title and explicit version qualifiers (e.g. promo, full, female).
+        """
+        raw = (title or "").strip()
+        raw_alnum = re.sub(r'[^a-z0-9]', '', re.sub(r'\.mp3$', '', raw, flags=re.IGNORECASE).lower())
+
+        t = raw.lower()
+        t = re.sub(r'\.mp3$', '', t, flags=re.IGNORECASE)
+        t = re.sub(r'^\s*0*\d+\s*[\-_.]\s*', '', t)
+
+        versions: List[str] = []
+
+        def _extract_paren(match):
+            inner = (match.group(1) or match.group(2) or "").strip()
+            inner_clean = re.sub(r'[^a-z0-9\s]', ' ', inner.lower())
+            inner_clean = re.sub(r'\s+', ' ', inner_clean).strip()
+            if not inner_clean:
+                return " "
+            if inner_clean in cls.PAREN_VERSION_TOKENS:
+                v = cls.PAREN_VERSION_TOKENS[inner_clean]
+                if v not in versions:
+                    versions.append(v)
+                return " "
+            # Check individual tokens inside parentheses e.g. "(Full Audio Version)"
+            matched_any = False
+            for k, v in cls.PAREN_VERSION_TOKENS.items():
+                if re.search(rf'\b{re.escape(k)}\b', inner_clean):
+                    if v not in versions:
+                        versions.append(v)
+                    matched_any = True
+            return " " if matched_any else f" {inner_clean} "
+
+        t = re.sub(r'\(([^)]+)\)|\[([^\]]+)\]', _extract_paren, t)
+
+        # Standalone unambiguous version markers (e.g. "Full Version", "Promo")
+        if re.search(r'\bfull\s+(?:song|version)\b', t):
+            if "full" not in versions:
+                versions.append("full")
+            t = re.sub(r'\bfull\s+(?:song|version)\b', ' ', t)
+
+        for vw in cls.STANDALONE_VERSION_WORDS:
+            if re.search(rf'\b{vw}\b', t):
+                if vw not in versions:
+                    versions.append(vw)
+                t = re.sub(rf'\b{vw}\b', ' ', t)
+
+        t_clean = re.sub(r'[^a-z0-9\s]', ' ', t)
+        t_clean = re.sub(r'\b(song|songs|audio|video|track|version)\b', ' ', t_clean)
+        base_core = re.sub(r'\s+', ' ', t_clean).strip()
+
+        version_tuple = tuple(sorted(set(versions)))
+        full_norm = " ".join([base_core] + list(version_tuple)).strip()
+
+        return {
+            "raw": raw,
+            "raw_alnum": raw_alnum,
+            "base_core": base_core,
+            "version_tags": version_tuple,
+            "full_norm": full_norm,
+        }
+
+    @staticmethod
+    def compare_singers(source_singer: Optional[str], catalog_singers: Any) -> Optional[float]:
+        """
+        Compares singer credit strings/lists. Returns float in [0.0, 1.0], or None if unavailable.
+        """
+        def split_singers(val: Any) -> List[str]:
+            if not val:
+                return []
+            if isinstance(val, list):
+                items = [str(x) for x in val if x]
+            else:
+                items = [str(val)]
+            names = []
+            for item in items:
+                for part in re.split(r'[,/&]|\band\b|\bfeat\.?\b', item, flags=re.IGNORECASE):
+                    norm = re.sub(r'[^a-z0-9\s]', ' ', part.lower())
+                    norm = re.sub(r'\s+', ' ', norm).strip()
+                    if norm and norm != "unknown":
+                        names.append(norm)
+            return names
+
+        src_list = split_singers(source_singer)
+        cat_list = split_singers(catalog_singers)
+        if not src_list or not cat_list:
+            return None
+
+        matched = 0
+        for s in src_list:
+            s_compact = s.replace(" ", "")
+            best = max(
+                max(
+                    SequenceMatcher(None, s, c).ratio(),
+                    SequenceMatcher(None, s_compact, c.replace(" ", "")).ratio()
+                )
+                for c in cat_list
+            )
+            if best >= 0.80:
+                matched += 1
+        return matched / max(len(src_list), len(cat_list))
+
     @staticmethod
     def normalize_song_title(title: str) -> str:
         t = title.strip().lower()
@@ -339,51 +486,190 @@ class CloudCatalogService:
         return t
 
     @classmethod
+    def match_song_detailed(
+        cls,
+        source_title: str,
+        catalog_songs: List[Dict[str, Any]],
+        source_singer: Optional[str] = None,
+        source_filename: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Version-aware, metadata-aware song comparator.
+        Classifies match into EXACT_MATCH, POSSIBLE_VERSION_MATCH, UNCERTAIN, or MISSING.
+        Never conflates conflicting versions such as (Promo) vs (Full).
+        """
+        empty_res = {
+            "exists_in_catalog": False,
+            "classification": "MISSING",
+            "confidence": "NONE",
+            "score": 0.0,
+            "matched_song": None,
+            "version_candidates": [],
+            "reason": None,
+            "singer_match_score": None
+        }
+        if not source_title or not catalog_songs:
+            return empty_res
+
+        src = cls.parse_song_title_components(source_title)
+        src_file = cls.parse_song_title_components(source_filename) if source_filename else None
+
+        exact_matches: List[Tuple[float, Optional[float], Dict[str, Any], str]] = []
+        version_candidates: List[Tuple[float, int, Optional[float], Dict[str, Any], str]] = []
+        best_fuzzy: Optional[Tuple[float, Optional[float], Dict[str, Any]]] = None
+
+        for cat_song in catalog_songs:
+            cat_title = cat_song.get("title", "")
+            cat = cls.parse_song_title_components(cat_title)
+            cat_audio_raw = cat_song.get("audio") or cat_song.get("filename") or ""
+            cat_audio = re.sub(r'\.mp3$', '', cat_audio_raw, flags=re.IGNORECASE)
+            cat_file = cls.parse_song_title_components(cat_audio) if cat_audio else None
+
+            singer_sim = cls.compare_singers(source_singer, cat_song.get("singers") or cat_song.get("artist"))
+
+            # 1. Exact raw alphanumeric match
+            if src["raw_alnum"] and src["raw_alnum"] == cat["raw_alnum"]:
+                exact_matches.append((1.0, singer_sim, cat_song, "Exact title match"))
+                continue
+
+            # 2. Check normalized title & version tags
+            if src["base_core"] and src["base_core"] == cat["base_core"]:
+                if src["version_tags"] == cat["version_tags"]:
+                    exact_matches.append((1.0, singer_sim, cat_song, "Exact normalized match"))
+                else:
+                    # Same base title, conflicting/unspecified version (e.g. Full vs Promo or Full vs untagged)
+                    priority_tagged = 1 if cat["version_tags"] else 0
+                    src_v = ", ".join(src["version_tags"]) or "standard"
+                    cat_v = ", ".join(cat["version_tags"]) or "standard"
+                    reason = f"Possible version match: source '{source_title}' ({src_v}) vs catalog '{cat_title}' ({cat_v})"
+                    version_candidates.append((0.92, priority_tagged, singer_sim, cat_song, reason))
+                continue
+
+            # 3. Check catalog audio filename (if not shadowed by explicit version conflict on title)
+            if cat_file and src["base_core"] and cat_file["base_core"] == src["base_core"]:
+                if src["version_tags"] == cat_file["version_tags"]:
+                    exact_matches.append((0.98, singer_sim, cat_song, "Exact filename match"))
+                else:
+                    priority_tagged = 1 if (cat["version_tags"] or cat_file["version_tags"]) else 0
+                    src_v = ", ".join(src["version_tags"]) or "standard"
+                    cat_v = ", ".join(cat_file["version_tags"]) or "standard"
+                    reason = f"Possible version match (filename): source '{source_title}' ({src_v}) vs catalog '{cat_title}' ({cat_v})"
+                    version_candidates.append((0.90, priority_tagged, singer_sim, cat_song, reason))
+                continue
+
+            # 4. Check source filename against catalog only when source title has NO version tag conflict
+            if src_file and not src["version_tags"] and src_file["base_core"]:
+                if src_file["base_core"] == cat["base_core"] and src_file["version_tags"] == cat["version_tags"]:
+                    exact_matches.append((0.96, singer_sim, cat_song, "Matched by source filename"))
+                    continue
+
+            # 5. Fuzzy base & full similarity
+            base_sim = SequenceMatcher(None, src["base_core"], cat["base_core"]).ratio() if (src["base_core"] and cat["base_core"]) else 0.0
+            full_sim = SequenceMatcher(None, src["full_norm"], cat["full_norm"]).ratio() if (src["full_norm"] and cat["full_norm"]) else 0.0
+
+            # If near-identical base with version difference
+            if base_sim >= 0.90 and src["version_tags"] != cat["version_tags"]:
+                priority_tagged = 1 if cat["version_tags"] else 0
+                src_v = ", ".join(src["version_tags"]) or "standard"
+                cat_v = ", ".join(cat["version_tags"]) or "standard"
+                reason = f"Possible version match: source '{source_title}' ({src_v}) vs catalog '{cat_title}' ({cat_v})"
+                version_candidates.append((round(base_sim, 3), priority_tagged, singer_sim, cat_song, reason))
+                continue
+
+            sim = max(base_sim, full_sim)
+            if src["version_tags"] == cat["version_tags"] and singer_sim is not None and sim >= 0.65:
+                if singer_sim >= 0.70:
+                    sim = min(0.95, sim + 0.04)
+                elif singer_sim < 0.20 and sim < 0.92:
+                    sim = max(0.0, sim - 0.05)
+
+            if best_fuzzy is None or sim > best_fuzzy[0]:
+                best_fuzzy = (sim, singer_sim, cat_song)
+
+        if exact_matches:
+            # Prefer highest score, breaking ties by highest singer match
+            best = max(exact_matches, key=lambda x: (x[0], x[1] if x[1] is not None else 0.5))
+            return {
+                "exists_in_catalog": True,
+                "classification": "EXACT_MATCH",
+                "confidence": "EXACT" if best[0] == 1.0 else "HIGH",
+                "score": round(best[0], 3),
+                "matched_song": best[2],
+                "version_candidates": [],
+                "reason": best[3],
+                "singer_match_score": best[1]
+            }
+
+        if version_candidates:
+            # Prefer explicitly version-tagged match (e.g. Promo) with highest score/singer sim
+            version_candidates.sort(key=lambda x: (x[0], x[1], x[2] if x[2] is not None else 0.5), reverse=True)
+            best_v = version_candidates[0]
+            return {
+                "exists_in_catalog": False,
+                "classification": "POSSIBLE_VERSION_MATCH",
+                "confidence": "UNCERTAIN",
+                "score": round(best_v[0], 3),
+                "matched_song": best_v[3],
+                "version_candidates": [vc[3] for vc in version_candidates],
+                "reason": best_v[4],
+                "singer_match_score": best_v[2]
+            }
+
+        if best_fuzzy:
+            sim, singer_sim, cat_song = best_fuzzy
+            if sim >= 0.88:
+                return {
+                    "exists_in_catalog": True,
+                    "classification": "EXACT_MATCH",
+                    "confidence": "HIGH",
+                    "score": round(sim, 3),
+                    "matched_song": cat_song,
+                    "version_candidates": [],
+                    "reason": "High-confidence fuzzy match",
+                    "singer_match_score": singer_sim
+                }
+            elif sim >= 0.68:
+                return {
+                    "exists_in_catalog": False,
+                    "classification": "UNCERTAIN",
+                    "confidence": "UNCERTAIN",
+                    "score": round(sim, 3),
+                    "matched_song": cat_song,
+                    "version_candidates": [],
+                    "reason": f"Uncertain match against '{cat_song.get('title')}' (score {sim:.2f})",
+                    "singer_match_score": singer_sim
+                }
+
+        best_score = round(best_fuzzy[0], 3) if best_fuzzy else 0.0
+        return {
+            **empty_res,
+            "score": best_score,
+            "reason": "No matching track in catalog"
+        }
+
+    @classmethod
     def match_song_to_catalog(
         cls,
         source_title: str,
-        catalog_songs: List[Dict[str, Any]]
+        catalog_songs: List[Dict[str, Any]],
+        source_singer: Optional[str] = None,
+        source_filename: Optional[str] = None
     ) -> Tuple[bool, str, float, Optional[Dict[str, Any]]]:
         """
-        Unified song comparator.
+        Unified song comparator (backward-compatible 4-tuple wrapper around match_song_detailed).
         Returns: (exists_in_catalog: bool, confidence: str, score: float, matched_song: Optional[dict])
-        Confidence values: 'EXACT', 'HIGH', 'UNCERTAIN', 'NONE'
         """
-        if not source_title or not catalog_songs:
-            return False, "NONE", 0.0, None
-
-        source_norm = cls.normalize_song_title(source_title)
-        source_raw = re.sub(r'[^a-z0-9]', '', source_title.lower())
-
-        # 1. Exact raw or exact normalized match
-        for s in catalog_songs:
-            cat_title = s.get("title", "")
-            cat_norm = cls.normalize_song_title(cat_title)
-            cat_raw = re.sub(r'[^a-z0-9]', '', cat_title.lower())
-            cat_audio = re.sub(r'\.mp3$', '', s.get("audio", "") or s.get("filename", ""), flags=re.IGNORECASE)
-            cat_audio_norm = cls.normalize_song_title(cat_audio)
-
-            if source_raw and source_raw == cat_raw:
-                return True, "EXACT", 1.0, s
-            if source_norm and (source_norm == cat_norm or source_norm == cat_audio_norm):
-                return True, "EXACT", 1.0, s
-
-        # 2. High similarity match (>= 0.88)
-        best_song = None
-        best_score = 0.0
-        for s in catalog_songs:
-            cat_title = s.get("title", "")
-            cat_norm = cls.normalize_song_title(cat_title)
-            score = SequenceMatcher(None, source_norm, cat_norm).ratio()
-            if score > best_score:
-                best_score = score
-                best_song = s
-
-        if best_score >= 0.88:
-            return True, "HIGH", best_score, best_song
-        elif best_score >= 0.68:
-            return False, "UNCERTAIN", best_score, best_song
-
-        return False, "NONE", best_score, None
+        res = cls.match_song_detailed(
+            source_title=source_title,
+            catalog_songs=catalog_songs,
+            source_singer=source_singer,
+            source_filename=source_filename
+        )
+        return (
+            res["exists_in_catalog"],
+            res["confidence"],
+            res["score"],
+            res["matched_song"]
+        )
 
 cloud_catalog_service = CloudCatalogService()

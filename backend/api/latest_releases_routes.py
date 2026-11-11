@@ -95,7 +95,8 @@ def download_track(
     url: str = Query(..., description="Source MP3 audio URL"),
     album_name: Optional[str] = Query(None, description="Album name for tagging"),
     song_title: Optional[str] = Query(None, description="Song title for filename"),
-    track_number: int = Query(1, description="Track number")
+    track_number: int = Query(1, description="Track number"),
+    language: Optional[str] = Query(None, description="Album language for canonical disambiguation")
 ):
     """
     Authorized proxy endpoint for downloading MP3 track directly to user browser.
@@ -111,7 +112,7 @@ def download_track(
     if album_name and song_title:
         from backend.services.catalog import cloud_catalog_service
         try:
-            cat_match = cloud_catalog_service.find_canonical_album(album_name)
+            cat_match = cloud_catalog_service.find_canonical_album(album_name, query_language=language)
             if cat_match:
                 cat_meta = cloud_catalog_service.get_album_metadata(cat_match)
                 cat_songs = cat_meta.get("songs", [])

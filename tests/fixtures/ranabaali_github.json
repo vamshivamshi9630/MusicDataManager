@@ -1,0 +1,50 @@
+{
+  "album": {
+    "id": "2a37f73ff827",
+    "name": "Ranabaali",
+    "year": 2026,
+    "musicDirector": "Ajay-Atul",
+    "genre": "Tollywood Soundtrack",
+    "language": "Telugu",
+    "image": "Ranabaali.png",
+    "songCount": 2
+  },
+  "songs": [
+    {
+      "id": "a79e82323a93",
+      "title": "Endhayya Saami Song (Promo)",
+      "normalizedTitle": "endhayya saami song promo",
+      "trackNumber": 1,
+      "duration": "1:20",
+      "durationSeconds": 80,
+      "audio": "Endhayya Saami Song (Promo).mp3",
+      "composer": "Ajay-Atul",
+      "singers": [
+        "Swetha Mohan",
+        "Ajay Gogavale"
+      ],
+      "bitrate": 126018,
+      "sampleRate": 44100,
+      "channels": 2,
+      "fileSize": 1578415
+    },
+    {
+      "id": "8e7697b4a897",
+      "title": "Endhayya Saami",
+      "normalizedTitle": "endhayya saami",
+      "trackNumber": 2,
+      "duration": "1:20",
+      "durationSeconds": 80,
+      "audio": "Endhayya Saami.mp3",
+      "composer": "Ajay-Atul",
+      "singers": [
+        "Swetha Mohan",
+        "Ajay Gogavale"
+      ],
+      "bitrate": 126018,
+      "sampleRate": 44100,
+      "channels": 2,
+      "fileSize": 1578415
+    }
+  ]
+}

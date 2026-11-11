@@ -21,8 +21,14 @@ class TrackingStatus(str, Enum):
 class MatchConfidence(str, Enum):
     EXACT = "EXACT"        # 1.0 match
     HIGH = "HIGH"          # >= 0.88 match (auto-accepted as existing)
-    UNCERTAIN = "UNCERTAIN"# 0.65 - 0.87 (shown for manual review)
+    UNCERTAIN = "UNCERTAIN"# 0.65 - 0.87 OR Possible Version Match (requires verification)
     NONE = "NONE"          # < 0.65 (treated as new/missing)
+
+class MatchClassification(str, Enum):
+    EXACT_MATCH = "EXACT_MATCH"
+    POSSIBLE_VERSION_MATCH = "POSSIBLE_VERSION_MATCH"
+    UNCERTAIN = "UNCERTAIN"
+    MISSING = "MISSING"
 
 class LanguageConfidence(str, Enum):
     HIGH = "HIGH"
@@ -51,19 +57,46 @@ class DiscoveredSong:
     first_discovered_at: float = field(default_factory=time.time)
     last_checked_at: float = field(default_factory=time.time)
     id: Optional[int] = None
+    singer: Optional[str] = None
+    available_bitrate: Optional[str] = None
+    available_bitrates: List[str] = field(default_factory=list)
+    download_links: Dict[str, str] = field(default_factory=dict)
+    source_page_url: Optional[str] = None
+    link_available: bool = False
+    download_authorized: bool = False
+    match_classification: MatchClassification = MatchClassification.MISSING
+    match_reason: Optional[str] = None
+    catalog_version_candidates: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.source_audio_url and not self.link_available:
+            self.link_available = True
+        if self.available_bitrates and not self.available_bitrate:
+            self.available_bitrate = ", ".join(self.available_bitrates)
 
     def to_dict(self) -> Dict[str, Any]:
+        cls_val = self.match_classification.value if hasattr(self.match_classification, "value") else str(self.match_classification)
         return {
             "id": self.id,
             "song_title": self.song_title,
             "normalized_title": self.normalized_title,
             "track_number": self.track_number,
+            "singer": self.singer,
+            "available_bitrate": self.available_bitrate,
+            "available_bitrates": list(self.available_bitrates),
+            "download_links": dict(self.download_links),
             "source_audio_url": self.source_audio_url,
+            "source_page_url": self.source_page_url,
+            "link_available": self.link_available,
+            "download_authorized": self.download_authorized,
             "exists_in_catalog": self.exists_in_catalog,
             "catalog_song_title": self.catalog_song_title,
             "catalog_song_id": self.catalog_song_id,
             "match_confidence": self.match_confidence.value,
+            "match_classification": cls_val,
             "match_score": self.match_score,
+            "match_reason": self.match_reason,
+            "catalog_version_candidates": list(self.catalog_version_candidates),
             "tracking_status": self.tracking_status.value,
             "first_discovered_at": self.first_discovered_at,
             "last_checked_at": self.last_checked_at
