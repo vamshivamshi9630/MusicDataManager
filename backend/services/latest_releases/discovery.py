@@ -14,6 +14,7 @@ from backend.services.latest_releases.models import (
 from backend.services.latest_releases.db import get_latest_releases_db, LatestReleasesDB
 from backend.services.latest_releases.source_client import SourceClient
 from backend.services.latest_releases.album_parser import AlbumParser
+from backend.services.catalog import CatalogLookupError
 from backend.services.latest_releases.song_comparator import SongComparator
 from backend.services.latest_releases.reconciliation import reconcile_active_notifications
 
@@ -211,6 +212,7 @@ class LatestReleasesDiscoveryEngine:
             albums_discovered = len(all_candidates)
             comparator = SongComparator()
             album_error_count = 0
+            catalog_index_error: Optional[CatalogLookupError] = None
 
             # 3. Fetch & parse candidate albums (bounded concurrency for real HTTP client, sequential for mocks)
             if is_real_client and albums_discovered > 1:
@@ -330,12 +332,28 @@ class LatestReleasesDiscoveryEngine:
                             language=analyzed.language,
                             resolution_status=NotificationResolutionStatus.PENDING.value
                         )
+                except CatalogLookupError as cat_err:
+                    album_error_count += 1
+                    comparator.mark_album_uncertain(discovered, reason=str(cat_err))
+                    logger.error(
+                        f"Catalog lookup error verifying album '{discovered.album_name}' ({album_url}): {cat_err}. "
+                        "Marked UNCERTAIN and deferred notification creation."
+                    )
+                    if getattr(cat_err, "path", None) == "metadata/indexes/albums.json" or (
+                        albums_inspected == 0 and getattr(cat_err, "reason", "") in ("not_found", "auth_error", "invalid_json", "invalid_format")
+                    ):
+                        catalog_index_error = cat_err
+                        break
                 except Exception as album_err:
                     album_error_count += 1
                     logger.warning(f"Error processing album {album_url}: {album_err}")
 
-            if albums_discovered > 0 and albums_inspected == 0 and album_error_count > 0:
-                scan_error = f"All {album_error_count} candidate album(s) failed during catalog comparison."
+            if catalog_index_error is not None or (albums_discovered > 0 and albums_inspected == 0 and album_error_count > 0):
+                scan_error = (
+                    f"Catalog verification failed ({catalog_index_error})"
+                    if catalog_index_error is not None
+                    else f"All {album_error_count} candidate album(s) failed during catalog comparison."
+                )
                 logger.error(f"[DISCOVERY] {scan_error}")
                 return {
                     "success": False,
@@ -349,6 +367,8 @@ class LatestReleasesDiscoveryEngine:
                     "albums_discovered": albums_discovered,
                     "albums_inspected": albums_inspected,
                     "albums_found": albums_discovered,
+                    "new_albums_count": new_albums_count,
+                    "new_songs_count": new_songs_count,
                     "failed_pages": failed_pages,
                 }
 

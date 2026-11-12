@@ -179,7 +179,7 @@ class BaseGitSyncService(IGitSyncProvider):
 
             # If we have a non-mock token, update the remote URL to embed it so git can push non-interactively.
             if auth_token and not str(auth_token).startswith("ghs_mock"):
-                auth_url = f"https://x-access-token:{auth_token}@github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
+                auth_url = settings.musicdata_git_url(auth_token=auth_token)
                 self._run_git(["remote", "set-url", "origin", auth_url], check=False)
             else:
                 # If no usable token is available, surface a clearer error before attempting `git push`.

@@ -6,6 +6,7 @@ from backend.services.latest_releases.models import (
     MatchConfidence,
     TrackingStatus
 )
+from backend.services.catalog import CatalogLookupError
 from backend.services.latest_releases.db import LatestReleasesDB, get_latest_releases_db
 from backend.services.latest_releases.song_comparator import SongComparator
 
@@ -40,6 +41,7 @@ def reconcile_active_notifications(
 
     resolved_count = 0
     partially_resolved_count = 0
+    deferred_on_catalog_error = 0
 
     for notif in active_notifications:
         notif_id = notif.get("id")
@@ -58,7 +60,12 @@ def reconcile_active_notifications(
             catalog_songs = comparator.fetch_catalog_album_songs(catalog_match)
             if not catalog_songs:
                 continue
+        except CatalogLookupError as ce:
+            deferred_on_catalog_error += 1
+            logger.warning(f"Catalog lookup error verifying '{album_name}' ({ce.reason}): {ce}. Preserving pending notification.")
+            continue
         except Exception as e:
+            deferred_on_catalog_error += 1
             logger.warning(f"Could not verify catalog for '{album_name}': {e}. Preserving pending notification.")
             continue
 
@@ -120,5 +127,6 @@ def reconcile_active_notifications(
     return {
         "reconciled_count": len(active_notifications),
         "resolved_notifications": resolved_count,
-        "partially_resolved": partially_resolved_count
+        "partially_resolved": partially_resolved_count,
+        "deferred_on_catalog_error": deferred_on_catalog_error,
     }

@@ -2,8 +2,10 @@ import os
 import re
 import time
 import json
+import socket
 import logging
 import urllib.request
+import urllib.error
 import urllib.parse
 from difflib import SequenceMatcher
 from typing import List, Dict, Any, Optional, Tuple
@@ -12,12 +14,28 @@ from backend.services.fuzzy_search import search_albums_fuzzy, check_near_duplic
 
 logger = logging.getLogger(__name__)
 
+
 class CatalogLookupError(Exception):
-    """Raised when authoritative catalog metadata cannot be fetched from GitHub."""
-    pass
+    """Raised when authoritative catalog metadata cannot be verified from GitHub."""
+
+    def __init__(
+        self,
+        message: str,
+        reason: str = "catalog_unavailable",
+        status_code: Optional[int] = None,
+        path: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.reason = reason
+        self.status_code = status_code
+        self.path = path
+
 
 class CloudCatalogService:
     """Fetches and caches dynamic catalog metadata directly from GitHub in Cloud Mode."""
+
+    CACHE_TTL_SECONDS = 60
+    MAX_STALE_CACHE_AGE_SECONDS = 3600
 
     KNOWN_LANGUAGES = [
         "Telugu", "Tamil", "Hindi", "Kannada", "Malayalam",
@@ -25,15 +43,53 @@ class CloudCatalogService:
     ]
 
     def __init__(self, owner: Optional[str] = None, repo: Optional[str] = None, branch: Optional[str] = None):
-        self.owner = owner or settings.GITHUB_OWNER
-        self.repo = repo or settings.GITHUB_REPOSITORY
-        self.branch = branch or settings.GITHUB_BRANCH
-        self.raw_base_url = f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/{self.branch}"
+        self._owner_override = owner
+        self._repo_override = repo
+        self._branch_override = branch
+        self._raw_base_url_override: Optional[str] = None
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._albums_index_cache: Optional[List[Dict[str, Any]]] = None
         self._artists_index_cache: Optional[List[Dict[str, Any]]] = None
         self._album_metadata_cache: Dict[str, Dict[str, Any]] = {}
         self._last_fetch_time: float = 0.0
+        self._cache_is_stale: bool = False
+        self._last_catalog_error: Optional[Dict[str, Any]] = None
+
+    @property
+    def owner(self) -> str:
+        return self._owner_override or settings.GITHUB_OWNER
+
+    @owner.setter
+    def owner(self, value: Optional[str]):
+        self._owner_override = value
+
+    @property
+    def repo(self) -> str:
+        return self._repo_override or settings.MUSICDATA_GITHUB_REPOSITORY
+
+    @repo.setter
+    def repo(self, value: Optional[str]):
+        self._repo_override = value
+
+    @property
+    def branch(self) -> str:
+        return self._branch_override or settings.GITHUB_BRANCH
+
+    @branch.setter
+    def branch(self, value: Optional[str]):
+        self._branch_override = value
+
+    @property
+    def raw_base_url(self) -> str:
+        if self._raw_base_url_override:
+            return self._raw_base_url_override.rstrip("/")
+        if self._owner_override is None and self._repo_override is None and self._branch_override is None:
+            return settings.musicdata_raw_base_url
+        return f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/{self.branch}"
+
+    @raw_base_url.setter
+    def raw_base_url(self, value: Optional[str]):
+        self._raw_base_url_override = value
 
     def refresh_catalog(self):
         """Invalidate in-memory caches to force fetching fresh metadata from GitHub."""
@@ -42,12 +98,38 @@ class CloudCatalogService:
         self._artists_index_cache = None
         self._album_metadata_cache.clear()
         self._last_fetch_time = 0.0
+        self._cache_is_stale = False
+        self._last_catalog_error = None
+
+    def get_cache_status(self) -> Dict[str, Any]:
+        now = time.time()
+        age = round(now - self._last_fetch_time, 1) if self._last_fetch_time else None
+        return {
+            "cached": self._albums_index_cache is not None,
+            "stale": self._cache_is_stale,
+            "age_seconds": age,
+            "last_error": self._last_catalog_error,
+            "repository": f"{self.owner}/{self.repo}",
+            "branch": self.branch,
+        }
+
+    @staticmethod
+    def _sanitize_url_for_log(url: str) -> str:
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            host = parsed.hostname or ""
+            if parsed.port:
+                host = f"{host}:{parsed.port}"
+            return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        except Exception:
+            return url.split("?")[0]
 
     def _fetch_json(self, path: str, bypass_cache: bool = True) -> Any:
         clean_path = path.lstrip("/")
         quoted_path = urllib.parse.quote(clean_path, safe="/:")
         t_param = f"?t={int(time.time())}" if bypass_cache else ""
         url = f"{self.raw_base_url}/{quoted_path}{t_param}"
+        safe_url = self._sanitize_url_for_log(url)
         req = urllib.request.Request(
             url,
             headers={
@@ -58,10 +140,45 @@ class CloudCatalogService:
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw_body = resp.read().decode("utf-8")
+            return json.loads(raw_body)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                msg = (
+                    f"Catalog resource not found (HTTP 404) at {safe_url} "
+                    f"(repo={self.owner}/{self.repo}, branch={self.branch})."
+                )
+                logger.error(f"[CloudCatalogService] {msg}")
+                raise CatalogLookupError(msg, reason="not_found", status_code=404, path=clean_path) from e
+            if e.code in (401, 403):
+                msg = f"GitHub authentication/authorization failed (HTTP {e.code}) fetching {safe_url}."
+                logger.error(f"[CloudCatalogService] {msg}")
+                raise CatalogLookupError(msg, reason="auth_error", status_code=e.code, path=clean_path) from e
+            msg = f"GitHub HTTP {e.code} error fetching {safe_url}: {e.reason}"
+            logger.error(f"[CloudCatalogService] {msg}")
+            raise CatalogLookupError(msg, reason="http_error", status_code=e.code, path=clean_path) from e
+        except (socket.timeout, TimeoutError) as e:
+            msg = f"Network timeout fetching {safe_url} from GitHub: {e}"
+            logger.error(f"[CloudCatalogService] {msg}")
+            raise CatalogLookupError(msg, reason="timeout", path=clean_path) from e
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), (socket.timeout, TimeoutError)) or "timed out" in str(e.reason).lower():
+                msg = f"Network timeout fetching {safe_url} from GitHub: {e.reason}"
+                logger.error(f"[CloudCatalogService] {msg}")
+                raise CatalogLookupError(msg, reason="timeout", path=clean_path) from e
+            msg = f"Network error fetching {safe_url} from GitHub: {e.reason}"
+            logger.error(f"[CloudCatalogService] {msg}")
+            raise CatalogLookupError(msg, reason="network_error", path=clean_path) from e
+        except json.JSONDecodeError as e:
+            msg = f"Invalid JSON received from {safe_url}: {e}"
+            logger.error(f"[CloudCatalogService] {msg}")
+            raise CatalogLookupError(msg, reason="invalid_json", path=clean_path) from e
+        except CatalogLookupError:
+            raise
         except Exception as e:
-            logger.error(f"[CloudCatalogService] Failed to fetch {url}: {e}")
-            raise CatalogLookupError(f"Failed to fetch {path} from GitHub: {e}") from e
+            msg = f"Unexpected catalog lookup failure for {safe_url}: {e}"
+            logger.error(f"[CloudCatalogService] {msg}")
+            raise CatalogLookupError(msg, reason="catalog_unavailable", path=clean_path) from e
 
     def get_statistics(self) -> Dict[str, Any]:
         try:
@@ -73,9 +190,13 @@ class CloudCatalogService:
                 "songs": raw_stats.get("totalSongs", 0),
                 "png_artwork": png_count,
                 "zero_byte_shield": "Active",
-                "mode": "CLOUD"
+                "mode": "CLOUD",
+                "catalog_stale": self._cache_is_stale,
             }
-        except Exception:
+        except CatalogLookupError as stat_err:
+            # Allow index-derived statistics only if catalog index itself is valid
+            if stat_err.path == "metadata/indexes/albums.json":
+                raise
             albums_idx = self.get_albums_index()
             total_songs = sum(a.get("songCount", 0) for a in albums_idx)
             png_count = sum(1 for a in albums_idx if a.get("image"))
@@ -84,23 +205,53 @@ class CloudCatalogService:
                 "songs": total_songs,
                 "png_artwork": png_count,
                 "zero_byte_shield": "Active",
-                "mode": "CLOUD"
+                "mode": "CLOUD",
+                "catalog_stale": self._cache_is_stale,
             }
 
-    def get_albums_index(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    def get_albums_index(self, force_refresh: bool = False, allow_stale_fallback: bool = True) -> List[Dict[str, Any]]:
         now = time.time()
-        # Refetch if cache is missing, force_refresh requested, or cache is older than 60 seconds
-        if not force_refresh and self._albums_index_cache is not None and (now - self._last_fetch_time) < 60:
+        # Return fresh cache when within TTL
+        if not force_refresh and self._albums_index_cache is not None and (now - self._last_fetch_time) < self.CACHE_TTL_SECONDS:
+            self._cache_is_stale = False
             return self._albums_index_cache
+
         try:
             idx = self._fetch_json("metadata/indexes/albums.json")
-            if isinstance(idx, list):
-                self._albums_index_cache = idx
-                self._last_fetch_time = now
-                return idx
-        except Exception as e:
-            print(f"[CloudCatalogService] Failed to fetch albums index: {e}")
-        return self._albums_index_cache or []
+            if not isinstance(idx, list):
+                raise CatalogLookupError(
+                    f"Invalid catalog index format (expected list, got {type(idx).__name__}).",
+                    reason="invalid_format",
+                    path="metadata/indexes/albums.json",
+                )
+            self._albums_index_cache = idx
+            self._last_fetch_time = now
+            self._cache_is_stale = False
+            self._last_catalog_error = None
+            return idx
+        except CatalogLookupError as err:
+            self._last_catalog_error = {
+                "reason": err.reason,
+                "status_code": err.status_code,
+                "message": str(err),
+                "timestamp": now,
+            }
+            cache_age = (now - self._last_fetch_time) if self._last_fetch_time else float("inf")
+            can_use_stale = (
+                allow_stale_fallback
+                and not force_refresh
+                and self._albums_index_cache is not None
+                and cache_age <= self.MAX_STALE_CACHE_AGE_SECONDS
+                and err.reason not in ("not_found", "auth_error", "invalid_json", "invalid_format")
+            )
+            if can_use_stale:
+                self._cache_is_stale = True
+                logger.warning(
+                    f"[CloudCatalogService] Using stale cached catalog index (age={cache_age:.1f}s, reason={err.reason}) "
+                    f"after transient failure: {err}"
+                )
+                return self._albums_index_cache
+            raise
 
     def get_albums_list(self) -> Dict[str, Any]:
         idx = self.get_albums_index()
@@ -176,7 +327,7 @@ class CloudCatalogService:
             album_name = album_identifier
 
         if not album_name:
-            raise CatalogLookupError("Cannot fetch album metadata without an album name.")
+            raise CatalogLookupError("Cannot fetch album metadata without an album name.", reason="invalid_format")
 
         if not partition:
             from backend.core.repository import RepositoryContext
@@ -189,7 +340,7 @@ class CloudCatalogService:
         path = f"metadata/albums/{partition}/{album_name}.json"
         data = self._fetch_json(path, bypass_cache=bypass_cache)
         if not isinstance(data, dict):
-            raise CatalogLookupError(f"Invalid metadata format received for album '{album_name}'.")
+            raise CatalogLookupError(f"Invalid metadata format received for album '{album_name}'.", reason="invalid_format", path=path)
 
         self._album_metadata_cache[cache_key] = data
         return data

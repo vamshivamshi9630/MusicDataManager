@@ -37,11 +37,28 @@ class SongComparator:
     def get_catalog_albums(self) -> List[Dict[str, Any]]:
         if self._catalog_albums is not None:
             return self._catalog_albums
-        try:
-            return cloud_catalog_service.get_albums_index()
-        except Exception as e:
-            logger.warning(f"Failed to fetch catalog albums: {e}")
-            return []
+        return cloud_catalog_service.get_albums_index()
+
+    @staticmethod
+    def mark_album_uncertain(discovered: DiscoveredAlbum, reason: str = "") -> DiscoveredAlbum:
+        """
+        Marks discovered album and all tracks as UNCERTAIN when authoritative catalog
+        verification fails. Never converts catalog lookup errors into NEW_ALBUM or MISSING.
+        """
+        discovered.exists_in_catalog = False
+        discovered.catalog_album_name = None
+        discovered.tracking_status = TrackingStatus.DISCOVERED
+        safe_reason = f"Catalog verification unavailable: {reason}" if reason else "Catalog verification unavailable"
+        for song in discovered.songs:
+            song.exists_in_catalog = False
+            song.catalog_song_title = None
+            song.catalog_song_id = None
+            song.match_confidence = MatchConfidence.UNCERTAIN
+            song.match_classification = MatchClassification.UNCERTAIN
+            song.match_score = 0.0
+            song.match_reason = safe_reason
+            song.tracking_status = TrackingStatus.DOWNLOAD_SUGGESTED
+        return discovered
 
     def find_matching_catalog_album(
         self,

@@ -25,7 +25,7 @@ jobs:
       LATEST_RELEASES_MAX_PAGES: "20"
       REQUIRE_POSTGRES: "1"
       GITHUB_OWNER: vamshivamshi9630
-      GITHUB_REPOSITORY: MusicData
+      MUSICDATA_GITHUB_REPOSITORY: MusicData
       GITHUB_BRANCH: main
 
     steps:

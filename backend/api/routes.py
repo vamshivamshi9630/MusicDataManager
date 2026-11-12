@@ -20,7 +20,7 @@ from backend.services.metadata import MetadataService
 from backend.services.duplicate import DuplicateDetectionService
 from backend.services.generator import GeneratorService, GeneratorValidationError
 from backend.services.git_sync import GitSyncService, GitSyncError
-from backend.services.catalog import cloud_catalog_service
+from backend.services.catalog import cloud_catalog_service, CatalogLookupError
 from backend.services.fuzzy_search import search_albums_fuzzy, check_near_duplicate_album
 
 router = APIRouter(prefix="/api")
@@ -91,7 +91,7 @@ def get_health():
         git_info = {
             "branch": settings.GITHUB_BRANCH,
             "head": "cloud-ephemeral",
-            "remote": f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git",
+            "remote": settings.musicdata_git_url(),
             "is_clean": True
         }
         repo_root = "Ephemeral Cloud Workspace"
@@ -108,14 +108,17 @@ def get_health():
         "status": "online",
         "mode": "CLOUD" if is_cloud else "LOCAL",
         "repository_root": repo_root,
-        "github_repository": f"{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}",
+        "github_repository": settings.musicdata_repo_slug,
         "git": git_info
     }
 
 @router.get("/stats")
 def get_stats():
     if is_cloud_mode():
-        return cloud_catalog_service.get_statistics()
+        try:
+            return cloud_catalog_service.get_statistics()
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
     
     try:
         rc = get_repo_context()
@@ -143,7 +146,10 @@ def get_stats():
 @router.get("/albums/search")
 def search_albums_endpoint(q: str = Query("", description="Query string for fuzzy album search")):
     if is_cloud_mode():
-        return cloud_catalog_service.search_albums(q)
+        try:
+            return cloud_catalog_service.search_albums(q)
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     rc = get_repo_context()
     ms = get_metadata_service(rc)
@@ -166,7 +172,10 @@ def search_albums_endpoint(q: str = Query("", description="Query string for fuzz
 @router.post("/albums/check-duplicate")
 def check_duplicate_album_endpoint(req: CheckDuplicateRequest):
     if is_cloud_mode():
-        return cloud_catalog_service.check_duplicate_album(req.album_name)
+        try:
+            return cloud_catalog_service.check_duplicate_album(req.album_name)
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     rc = get_repo_context()
     existing_names = [d.name for d in rc.list_all_album_directories()]
@@ -183,7 +192,10 @@ def autocomplete_directors(q: str = Query("", description="Query string for musi
 @router.get("/albums")
 def list_albums():
     if is_cloud_mode():
-        return cloud_catalog_service.get_albums_list()
+        try:
+            return cloud_catalog_service.get_albums_list()
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     rc = get_repo_context()
     ms = get_metadata_service(rc)
@@ -206,10 +218,13 @@ def list_albums():
 @router.get("/albums/{album_name}")
 def get_album_details(album_name: str, language: Optional[str] = None):
     if is_cloud_mode():
-        match = cloud_catalog_service.find_canonical_album(album_name, query_language=language)
-        if not match:
-            albums_idx = cloud_catalog_service.get_albums_index()
-            match = next((a for a in albums_idx if a.get("name", "").lower() == album_name.lower()), None)
+        try:
+            match = cloud_catalog_service.find_canonical_album(album_name, query_language=language)
+            if not match:
+                albums_idx = cloud_catalog_service.get_albums_index()
+                match = next((a for a in albums_idx if a.get("name", "").lower() == album_name.lower()), None)
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
         if not match:
             raise HTTPException(status_code=404, detail=f"Album '{album_name}' not found in cloud catalog.")
         
@@ -235,7 +250,7 @@ def get_album_details(album_name: str, language: Optional[str] = None):
                 art_path = urllib.parse.quote(img_clean, safe="/")
             else:
                 art_path = f"{encoded_album}/{urllib.parse.quote(img_clean, safe='')}"
-            art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{art_path}"
+            art_url = settings.build_raw_github_url(art_path, already_quoted=True)
 
         songs = []
         for idx, s in enumerate(meta_songs):
@@ -249,7 +264,7 @@ def get_album_details(album_name: str, language: Optional[str] = None):
                 audio_path = urllib.parse.quote(filename.lstrip("/"), safe="/")
             else:
                 audio_path = f"{encoded_album}/{urllib.parse.quote(filename, safe='')}"
-            audio_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{audio_path}"
+            audio_url = settings.build_raw_github_url(audio_path, already_quoted=True)
             songs.append({
                 "title": title,
                 "filename": filename,
@@ -323,12 +338,16 @@ def get_album_details(album_name: str, language: Optional[str] = None):
 @router.get("/albums/{album_name}/artwork")
 def get_local_album_artwork(album_name: str):
     if is_cloud_mode():
-        match = cloud_catalog_service.find_canonical_album(album_name)
+        try:
+            match = cloud_catalog_service.find_canonical_album(album_name)
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
         if not match:
             raise HTTPException(status_code=404, detail=f"Album '{album_name}' not found.")
         art_name = match.get("name")
         img_val = match.get("image") or f"{art_name}.png"
-        art_url = f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{urllib.parse.quote(art_name, safe='')}/{urllib.parse.quote(str(img_val).lstrip('/'), safe='/')}"
+        art_path = f"{urllib.parse.quote(art_name, safe='')}/{urllib.parse.quote(str(img_val).lstrip('/'), safe='/')}"
+        art_url = settings.build_raw_github_url(art_path, already_quoted=True)
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=art_url)
 
@@ -346,7 +365,10 @@ def get_local_album_artwork(album_name: str):
 def create_or_select_album(req: AlbumMetadataRequest, _auth=Depends(check_token)):
     if req.mode == "add":
         if is_cloud_mode():
-            dup_res = cloud_catalog_service.check_duplicate_album(req.album_name)
+            try:
+                dup_res = cloud_catalog_service.check_duplicate_album(req.album_name)
+            except CatalogLookupError as e:
+                raise HTTPException(status_code=503, detail=str(e))
         else:
             rc = get_repo_context()
             existing_names = [d.name for d in rc.list_all_album_directories()]
@@ -678,7 +700,7 @@ def sync_diagnostics(_auth=Depends(check_token)):
             token_present = bool(token_env)
             token_is_mock = str(token_env).startswith("ghs_mock") if token_present else False
             git_executable = shutil.which("git") is not None
-            repo_name = f"{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}"
+            repo_name = settings.musicdata_repo_slug
 
             return {
                 "success": True,
@@ -721,5 +743,8 @@ def refresh_catalog_endpoint(_auth=Depends(check_token)):
     """Trigger manual cache invalidation to force fetching fresh GitHub metadata immediately."""
     if is_cloud_mode():
         cloud_catalog_service.refresh_catalog()
-        cloud_catalog_service.get_albums_index(force_refresh=True)
+        try:
+            cloud_catalog_service.get_albums_index(force_refresh=True, allow_stale_fallback=False)
+        except CatalogLookupError as e:
+            raise HTTPException(status_code=503, detail=str(e))
     return {"success": True, "message": "Catalog cache refreshed successfully."}

@@ -48,7 +48,8 @@ class TestLatestReleasesV2Pagination:
         """
 
         engine = LatestReleasesDiscoveryEngine(db=db, source_client=mock_source)
-        result = engine.run_scan(locked_by="test_crawler", max_pages=5)
+        with patch("backend.services.latest_releases.discovery.SongComparator.compare_album", side_effect=lambda alb: (None, alb)):
+            result = engine.run_scan(locked_by="test_crawler", max_pages=5)
 
         assert result["success"] is True
         assert result["pages_requested"] == 3
@@ -82,7 +83,8 @@ class TestLatestReleasesV2Pagination:
         """
 
         engine = LatestReleasesDiscoveryEngine(db=db, source_client=mock_source)
-        result = engine.run_scan(locked_by="test_crawler", max_pages=10)
+        with patch("backend.services.latest_releases.discovery.SongComparator.compare_album", side_effect=lambda alb: (None, alb)):
+            result = engine.run_scan(locked_by="test_crawler", max_pages=10)
 
         assert result["success"] is True
         assert result["pages_requested"] == 2

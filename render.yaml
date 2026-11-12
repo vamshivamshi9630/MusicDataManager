@@ -21,7 +21,7 @@ services:
           property: connectionString
       - key: GITHUB_OWNER
         value: vamshivamshi9630
-      - key: GITHUB_REPOSITORY
+      - key: MUSICDATA_GITHUB_REPOSITORY
         value: MusicData
       - key: GITHUB_BRANCH
         value: main

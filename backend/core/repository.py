@@ -95,10 +95,10 @@ class IRepositoryProvider(ABC):
         return hashlib.sha256(clean_val.encode('utf-8')).hexdigest()[:12]
 
     def build_raw_audio_url(self, album_name: str, song_filename: str) -> str:
-        return f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{quote(album_name)}/{quote(song_filename)}"
+        return settings.build_raw_github_url(f"{quote(album_name)}/{quote(song_filename)}", already_quoted=True)
 
     def build_raw_image_url(self, album_name: str, image_filename: str) -> str:
-        return f"https://raw.githubusercontent.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}/{settings.GITHUB_BRANCH}/{quote(album_name)}/{quote(image_filename)}"
+        return settings.build_raw_github_url(f"{quote(album_name)}/{quote(image_filename)}", already_quoted=True)
 
 
 class LocalRepository(IRepositoryProvider):
@@ -252,9 +252,9 @@ class CloudRepository(IRepositoryProvider):
                 pass
 
         if auth_token and not str(auth_token).startswith("ghs_mock") and "x-access-token" not in (remote_url or ""):
-            self.remote_url = f"https://x-access-token:{auth_token}@github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
+            self.remote_url = settings.musicdata_git_url(auth_token=auth_token)
         else:
-            self.remote_url = remote_url or f"https://github.com/{settings.GITHUB_OWNER}/{settings.GITHUB_REPOSITORY}.git"
+            self.remote_url = remote_url or settings.musicdata_git_url()
 
     def provision_blobless_workspace(self, album_name: Optional[str] = None, source_repo_override: Optional[Path] = None) -> Path:
         if self.workspace_dir.exists():
