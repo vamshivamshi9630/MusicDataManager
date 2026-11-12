@@ -1263,7 +1263,7 @@
 
             try {
                 const statusParam = currentNotifCategory === 'completed' ? 'completed' : 'active';
-                const url = `${API_BASE}/latest-releases/notifications?category=${encodeURIComponent(currentNotifCategory)}&language=${encodeURIComponent(currentNotifLanguage)}&status=${statusParam}`;
+                const url = `${API_BASE}/latest-releases/notifications?category=${encodeURIComponent(currentNotifCategory)}&language=${encodeURIComponent(currentNotifLanguage)}&status=${statusParam}&limit=200`;
                 const res = await fetch(url);
                 if (!res.ok) throw new Error("Failed to load notifications");
                 const data = await res.json();
@@ -1304,8 +1304,23 @@
                 return;
             }
 
+            const sortedNotifs = [...notifs].sort((a, b) => {
+                const pageA = (a.source_page !== null && a.source_page !== undefined) ? Number(a.source_page) : Number.MAX_SAFE_INTEGER;
+                const pageB = (b.source_page !== null && b.source_page !== undefined) ? Number(b.source_page) : Number.MAX_SAFE_INTEGER;
+                if (pageA !== pageB) return pageA - pageB;
+
+                const posA = (a.source_position !== null && a.source_position !== undefined) ? Number(a.source_position) : Number.MAX_SAFE_INTEGER;
+                const posB = (b.source_position !== null && b.source_position !== undefined) ? Number(b.source_position) : Number.MAX_SAFE_INTEGER;
+                if (posA !== posB) return posA - posB;
+
+                const timeDiff = (Number(b.created_at) || 0) - (Number(a.created_at) || 0);
+                if (timeDiff !== 0) return timeDiff;
+
+                return (Number(a.id) || 0) - (Number(b.id) || 0);
+            });
+
             let html = '';
-            notifs.forEach(n => {
+            sortedNotifs.forEach(n => {
                 let badgeClass = 'bg-amber-900/40 text-amber-300 border-amber-800';
                 let typeLabel = (n.notification_type || 'NEW_ALBUM').replace('_', ' ');
                 if (n.notification_type === 'NEW_ALBUM') {

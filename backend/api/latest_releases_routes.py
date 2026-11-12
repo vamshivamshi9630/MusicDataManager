@@ -54,7 +54,7 @@ def get_notifications(
     language: Optional[str] = Query("all", description="Filter language: all, Telugu, Tamil, Hindi, Kannada, Malayalam, etc."),
     status: Optional[str] = Query("active", description="Filter resolution status: active, completed, all"),
     unread_only: bool = Query(False, description="Filter only unread notifications"),
-    limit: int = Query(50, description="Max notifications to retrieve")
+    limit: int = Query(200, description="Max notifications to retrieve")
 ):
     """Retrieve discovered notifications with language, status, and category filtering."""
     db = get_latest_releases_db()

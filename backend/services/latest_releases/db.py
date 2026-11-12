@@ -196,6 +196,8 @@ class LatestReleasesDB:
                     exists_in_catalog {bool_type} DEFAULT {'FALSE' if self.is_postgres else '0'},
                     catalog_album_name TEXT,
                     tracking_status VARCHAR(64) DEFAULT 'DISCOVERED',
+                    source_page INT,
+                    source_position INT,
                     first_discovered_at DOUBLE PRECISION NOT NULL,
                     last_checked_at DOUBLE PRECISION NOT NULL
                 );
@@ -237,6 +239,8 @@ class LatestReleasesDB:
                     language TEXT DEFAULT 'Telugu',
                     resolution_status VARCHAR(32) DEFAULT 'PENDING',
                     source_url TEXT,
+                    source_page INT,
+                    source_position INT,
                     missing_count INT DEFAULT 0,
                     is_read {bool_type} DEFAULT {'FALSE' if self.is_postgres else '0'},
                     created_at DOUBLE PRECISION NOT NULL,
@@ -272,8 +276,12 @@ class LatestReleasesDB:
         migrations = [
             ("discovered_albums", "language", "TEXT DEFAULT 'Telugu'"),
             ("discovered_albums", "language_confidence", "VARCHAR(32) DEFAULT 'UNKNOWN'"),
+            ("discovered_albums", "source_page", "INT"),
+            ("discovered_albums", "source_position", "INT"),
             ("notifications", "language", "TEXT DEFAULT 'Telugu'"),
             ("notifications", "resolution_status", "VARCHAR(32) DEFAULT 'PENDING'"),
+            ("notifications", "source_page", "INT"),
+            ("notifications", "source_position", "INT"),
             ("discovery_scans", "pages_checked", "INT DEFAULT 1"),
             ("discovery_scans", "pages_requested", "INT"),
             ("discovery_scans", "pages_successfully_checked", "INT"),
@@ -543,6 +551,8 @@ class LatestReleasesDB:
 
             lang = album.language or "Telugu"
             lang_conf = album.language_confidence.value if hasattr(album.language_confidence, 'value') else str(album.language_confidence or "UNKNOWN")
+            src_page = getattr(album, "source_page", None)
+            src_pos = getattr(album, "source_position", None)
 
             if row:
                 album_id = row[0]
@@ -552,24 +562,30 @@ class LatestReleasesDB:
                         SET album_name = %s, normalized_name = %s, music_director = %s, year = %s,
                             language = %s, language_confidence = %s,
                             director = %s, cast_crew = %s, artwork_url = %s, exists_in_catalog = %s,
-                            catalog_album_name = %s, tracking_status = %s, last_checked_at = %s
+                            catalog_album_name = %s, tracking_status = %s,
+                            source_page = COALESCE(%s, source_page),
+                            source_position = COALESCE(%s, source_position),
+                            last_checked_at = %s
                         WHERE id = %s;
                     """, (album.album_name, album.normalized_name, album.music_director, album.year,
                           lang, lang_conf,
                           album.director, album.cast_crew, album.artwork_url, album.exists_in_catalog,
-                          album.catalog_album_name, album.tracking_status.value, now, album_id))
+                          album.catalog_album_name, album.tracking_status.value, src_page, src_pos, now, album_id))
                 else:
                     cur.execute("""
                         UPDATE discovered_albums
                         SET album_name = ?, normalized_name = ?, music_director = ?, year = ?,
                             language = ?, language_confidence = ?,
                             director = ?, cast_crew = ?, artwork_url = ?, exists_in_catalog = ?,
-                            catalog_album_name = ?, tracking_status = ?, last_checked_at = ?
+                            catalog_album_name = ?, tracking_status = ?,
+                            source_page = COALESCE(?, source_page),
+                            source_position = COALESCE(?, source_position),
+                            last_checked_at = ?
                         WHERE id = ?;
                     """, (album.album_name, album.normalized_name, album.music_director, album.year,
                           lang, lang_conf,
                           album.director, album.cast_crew, album.artwork_url, 1 if album.exists_in_catalog else 0,
-                          album.catalog_album_name, album.tracking_status.value, now, album_id))
+                          album.catalog_album_name, album.tracking_status.value, src_page, src_pos, now, album_id))
             else:
                 if self.is_postgres:
                     cur.execute("""
@@ -577,11 +593,11 @@ class LatestReleasesDB:
                             source_url, album_name, normalized_name, music_director, year,
                             language, language_confidence,
                             director, cast_crew, artwork_url, exists_in_catalog, catalog_album_name,
-                            tracking_status, first_discovered_at, last_checked_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+                            tracking_status, source_page, source_position, first_discovered_at, last_checked_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
                     """, (album.source_url, album.album_name, album.normalized_name, album.music_director,
                           album.year, lang, lang_conf, album.director, album.cast_crew, album.artwork_url, album.exists_in_catalog,
-                          album.catalog_album_name, album.tracking_status.value, now, now))
+                          album.catalog_album_name, album.tracking_status.value, src_page, src_pos, now, now))
                     album_id = cur.fetchone()[0]
                 else:
                     cur.execute("""
@@ -589,11 +605,11 @@ class LatestReleasesDB:
                             source_url, album_name, normalized_name, music_director, year,
                             language, language_confidence,
                             director, cast_crew, artwork_url, exists_in_catalog, catalog_album_name,
-                            tracking_status, first_discovered_at, last_checked_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            tracking_status, source_page, source_position, first_discovered_at, last_checked_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """, (album.source_url, album.album_name, album.normalized_name, album.music_director,
                           album.year, lang, lang_conf, album.director, album.cast_crew, album.artwork_url, 1 if album.exists_in_catalog else 0,
-                          album.catalog_album_name, album.tracking_status.value, now, now))
+                          album.catalog_album_name, album.tracking_status.value, src_page, src_pos, now, now))
                     album_id = cur.lastrowid
 
             conn.commit()
@@ -719,10 +735,13 @@ class LatestReleasesDB:
         songs_list: List[Dict[str, Any]],
         missing_count: int,
         language: str = "Telugu",
-        resolution_status: str = "PENDING"
+        resolution_status: str = "PENDING",
+        source_page: Optional[int] = None,
+        source_position: Optional[int] = None
     ) -> bool:
         """
-        Creates a notification. If an identical notification hash exists, updates timestamp without creating duplicate.
+        Creates a notification. If an identical notification hash exists, updates timestamp and source order
+        without creating duplicates or overwriting existing read/unread status.
         Returns True if a new notification was inserted, False if deduplicated.
         """
         now = time.time()
@@ -742,22 +761,26 @@ class LatestReleasesDB:
             existing = cur.fetchone()
 
             if existing:
-                # Deduplicated: update timestamp, don't spam duplicate notification
+                # Deduplicated: update timestamp & latest NaaSongs source page/position while preserving is_read
                 notif_id = existing[0]
                 if self.is_postgres:
                     cur.execute("""
                         UPDATE notifications
                         SET updated_at = %s, details_json = %s, missing_count = %s,
-                            language = %s, resolution_status = %s
+                            language = %s, resolution_status = %s,
+                            source_page = COALESCE(%s, source_page),
+                            source_position = COALESCE(%s, source_position)
                         WHERE id = %s;
-                    """, (now, details_json, missing_count, language, resolution_status, notif_id))
+                    """, (now, details_json, missing_count, language, resolution_status, source_page, source_position, notif_id))
                 else:
                     cur.execute("""
                         UPDATE notifications
                         SET updated_at = ?, details_json = ?, missing_count = ?,
-                            language = ?, resolution_status = ?
+                            language = ?, resolution_status = ?,
+                            source_page = COALESCE(?, source_page),
+                            source_position = COALESCE(?, source_position)
                         WHERE id = ?;
-                    """, (now, details_json, missing_count, language, resolution_status, notif_id))
+                    """, (now, details_json, missing_count, language, resolution_status, source_page, source_position, notif_id))
                 conn.commit()
                 return False
 
@@ -766,20 +789,22 @@ class LatestReleasesDB:
                 cur.execute("""
                     INSERT INTO notifications (
                         album_id, notification_type, title, message, album_name, artwork_url,
-                        music_director, year, language, resolution_status, source_url, missing_count, is_read, created_at,
-                        updated_at, details_json, dedup_hash
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s, %s);
+                        music_director, year, language, resolution_status, source_url, source_page, source_position,
+                        missing_count, is_read, created_at, updated_at, details_json, dedup_hash
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s, %s);
                 """, (album_id, notification_type.value, title, message, album_name, artwork_url,
-                      music_director, year, language, resolution_status, source_url, missing_count, now, now, details_json, dedup_hash))
+                      music_director, year, language, resolution_status, source_url, source_page, source_position,
+                      missing_count, now, now, details_json, dedup_hash))
             else:
                 cur.execute("""
                     INSERT INTO notifications (
                         album_id, notification_type, title, message, album_name, artwork_url,
-                        music_director, year, language, resolution_status, source_url, missing_count, is_read, created_at,
-                        updated_at, details_json, dedup_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?);
+                        music_director, year, language, resolution_status, source_url, source_page, source_position,
+                        missing_count, is_read, created_at, updated_at, details_json, dedup_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?);
                 """, (album_id, notification_type.value, title, message, album_name, artwork_url,
-                      music_director, year, language, resolution_status, source_url, missing_count, now, now, details_json, dedup_hash))
+                      music_director, year, language, resolution_status, source_url, source_page, source_position,
+                      missing_count, now, now, details_json, dedup_hash))
 
             conn.commit()
             return True
@@ -792,7 +817,7 @@ class LatestReleasesDB:
         language: Optional[str] = None,
         status: Optional[str] = "active",
         unread_only: bool = False,
-        limit: int = 50
+        limit: int = 200
     ) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         try:
@@ -849,30 +874,33 @@ class LatestReleasesDB:
             query = f"""
                 SELECT id, album_id, notification_type, title, message, album_name, artwork_url,
                        music_director, year, source_url, missing_count, is_read, created_at,
-                       updated_at, details_json, dedup_hash, language, resolution_status
+                       updated_at, details_json, dedup_hash, language, resolution_status,
+                       source_page, source_position
                 FROM notifications
                 {where_clause}
-                ORDER BY created_at DESC LIMIT {limit};
+                ORDER BY
+                    CASE WHEN source_page IS NULL THEN 1 ELSE 0 END ASC,
+                    source_page ASC,
+                    CASE WHEN source_position IS NULL THEN 1 ELSE 0 END ASC,
+                    source_position ASC,
+                    created_at DESC,
+                    id ASC
+                LIMIT {int(limit)};
             """
 
             cur.execute(query, tuple(params) if params else ())
             rows = cur.fetchall()
+            col_names = [desc[0].lower() for desc in (cur.description or [])]
             results = []
             for r in rows:
-                if isinstance(r, tuple):
-                    d = {
-                        "id": r[0], "album_id": r[1], "notification_type": r[2], "title": r[3],
-                        "message": r[4], "album_name": r[5], "artwork_url": r[6], "music_director": r[7],
-                        "year": r[8], "source_url": r[9], "missing_count": r[10], "is_read": bool(r[11]),
-                        "created_at": r[12], "updated_at": r[13], "details_json": r[14], "dedup_hash": r[15],
-                        "language": r[16] if len(r) > 16 and r[16] else "Telugu",
-                        "resolution_status": r[17] if len(r) > 17 and r[17] else "PENDING"
-                    }
+                if isinstance(r, tuple) and col_names:
+                    d = dict(zip(col_names, r))
                 else:
-                    d = dict(r)
-                    d["is_read"] = bool(d.get("is_read"))
-                    d["language"] = d.get("language") or "Telugu"
-                    d["resolution_status"] = d.get("resolution_status") or "PENDING"
+                    d = {k.lower(): v for k, v in dict(r).items()}
+
+                d["is_read"] = bool(d.get("is_read"))
+                d["language"] = d.get("language") or "Telugu"
+                d["resolution_status"] = d.get("resolution_status") or "PENDING"
 
                 try:
                     d["songs"] = json.loads(d.get("details_json") or "[]")

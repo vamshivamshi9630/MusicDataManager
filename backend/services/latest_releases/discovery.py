@@ -53,6 +53,8 @@ class LatestReleasesDiscoveryEngine:
                 return cand, None, None
             if not discovered.artwork_url and cand.get("thumbnail"):
                 discovered.artwork_url = cand.get("thumbnail")
+            discovered.source_page = cand.get("source_page")
+            discovered.source_position = cand.get("source_position")
             return cand, discovered, None
         except Exception as err:
             return cand, None, err
@@ -164,11 +166,14 @@ class LatestReleasesDiscoveryEngine:
                     next_page_url = nav_info.get("next_page_url")
 
                     new_on_page = 0
-                    for cand in page_candidates:
+                    for idx_on_page, cand in enumerate(page_candidates, start=1):
                         u = cand.get("url")
                         if u and u not in seen_urls:
                             seen_urls.add(u)
-                            all_candidates.append(cand)
+                            cand_entry = dict(cand)
+                            cand_entry["source_page"] = page_num
+                            cand_entry["source_position"] = idx_on_page
+                            all_candidates.append(cand_entry)
                             new_on_page += 1
 
                     logger.info(
@@ -330,7 +335,9 @@ class LatestReleasesDiscoveryEngine:
                             songs_list=songs_payload,
                             missing_count=missing_count,
                             language=analyzed.language,
-                            resolution_status=NotificationResolutionStatus.PENDING.value
+                            resolution_status=NotificationResolutionStatus.PENDING.value,
+                            source_page=analyzed.source_page,
+                            source_position=analyzed.source_position
                         )
                 except CatalogLookupError as cat_err:
                     album_error_count += 1

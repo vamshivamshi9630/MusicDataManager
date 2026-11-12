@@ -120,6 +120,8 @@ class DiscoveredAlbum:
     songs: List[DiscoveredSong] = field(default_factory=list)
     first_discovered_at: float = field(default_factory=time.time)
     last_checked_at: float = field(default_factory=time.time)
+    source_page: Optional[int] = None
+    source_position: Optional[int] = None
     id: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -140,6 +142,8 @@ class DiscoveredAlbum:
             "catalog_album_name": self.catalog_album_name,
             "tracking_status": self.tracking_status.value,
             "songs": [s.to_dict() for s in self.songs],
+            "source_page": self.source_page,
+            "source_position": self.source_position,
             "first_discovered_at": self.first_discovered_at,
             "last_checked_at": self.last_checked_at
         }
@@ -158,6 +162,8 @@ class NotificationItem:
     language: str = "Telugu"
     resolution_status: str = "PENDING"
     source_url: str = ""
+    source_page: Optional[int] = None
+    source_position: Optional[int] = None
     songs: List[Dict[str, Any]] = field(default_factory=list)
     missing_count: int = 0
     is_read: bool = False
@@ -178,6 +184,8 @@ class NotificationItem:
             "language": self.language,
             "resolution_status": self.resolution_status,
             "source_url": self.source_url,
+            "source_page": self.source_page,
+            "source_position": self.source_position,
             "songs": self.songs,
             "missing_count": self.missing_count,
             "is_read": self.is_read,
