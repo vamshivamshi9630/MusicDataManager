@@ -256,7 +256,12 @@ class CloudRepository(IRepositoryProvider):
         else:
             self.remote_url = remote_url or settings.musicdata_git_url()
 
-    def provision_blobless_workspace(self, album_name: Optional[str] = None, source_repo_override: Optional[Path] = None) -> Path:
+    def provision_blobless_workspace(
+        self,
+        album_name: Optional[str] = None,
+        source_repo_override: Optional[Path] = None,
+        album_names: Optional[List[str]] = None
+    ) -> Path:
         if self.workspace_dir.exists():
             shutil.rmtree(self.workspace_dir, onerror=_remove_readonly)
 
@@ -286,7 +291,7 @@ class CloudRepository(IRepositoryProvider):
             except subprocess.TimeoutExpired:
                 raise CloudWorkspaceError("Minimal repository fetch timed out after 25 seconds.")
 
-            # Step 2: Initialize sparse-checkout for metadata, generator, scripts, and target album
+            # Step 2: Initialize sparse-checkout for metadata, generator, scripts, and target album(s)
             subprocess.run(["git", "sparse-checkout", "init", "--cone"], cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
             
             sparse_targets = [
@@ -298,12 +303,18 @@ class CloudRepository(IRepositoryProvider):
                 "MusiDirector_Year.txt"
             ]
             if album_name:
-                sparse_targets.append(album_name)
+                sparse_targets.append(self.validate_safe_filename(album_name))
+            if album_names:
+                for extra_album in album_names:
+                    safe_extra = self.validate_safe_filename(extra_album)
+                    if safe_extra not in sparse_targets:
+                        sparse_targets.append(safe_extra)
 
             subprocess.run(["git", "sparse-checkout", "set"] + sparse_targets, cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
             
             # Step 3: Checkout branch main and root generator scripts
-            subprocess.run(["git", "checkout", settings.GITHUB_BRANCH], cwd=self._root, capture_output=True, text=True, env=env, timeout=35, check=False)
+            checkout_timeout = max(35, getattr(settings, "GIT_CLONE_TIMEOUT_SECONDS", 60))
+            subprocess.run(["git", "checkout", settings.GITHUB_BRANCH], cwd=self._root, capture_output=True, text=True, env=env, timeout=checkout_timeout, check=False)
             subprocess.run(["git", "checkout", settings.GITHUB_BRANCH, "--", "generate_metadata.py", "generate_or_update_songs_with_details.py", "songs_with_details.json"], cwd=self._root, capture_output=True, text=True, env=env, timeout=15, check=False)
 
         # Configure author identity for Cloud commit operations

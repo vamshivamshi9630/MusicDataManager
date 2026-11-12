@@ -250,6 +250,23 @@ class LatestReleasesDB:
                 );
             """)
 
+            # 6. Direct-to-MusicData Background Sync Jobs Table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS musicdata_sync_jobs (
+                    job_id VARCHAR(64) PRIMARY KEY,
+                    idempotency_key VARCHAR(128) UNIQUE,
+                    parent_job_id VARCHAR(64),
+                    status VARCHAR(32) NOT NULL,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    updated_at DOUBLE PRECISION NOT NULL,
+                    completed_at DOUBLE PRECISION,
+                    request_json TEXT NOT NULL,
+                    progress_json TEXT NOT NULL,
+                    result_json TEXT,
+                    error_message TEXT
+                );
+            """)
+
             self._migrate_schema(cur)
             conn.commit()
         finally:
@@ -297,6 +314,7 @@ class LatestReleasesDB:
             ("discovered_songs", "download_authorized", bool_default),
             ("discovered_songs", "match_classification", "VARCHAR(64) DEFAULT 'MISSING'"),
             ("discovered_songs", "match_reason", "TEXT"),
+            ("musicdata_sync_jobs", "parent_job_id", "VARCHAR(64)"),
         ]
 
         for table, col, col_def in migrations:
@@ -308,14 +326,24 @@ class LatestReleasesDB:
                 print(f"[LatestReleasesDB] Column migration notice ({table}.{col}): {e}")
 
     # =========================================================================
-    # Distributed Scan Locking (Multi-Process & Render Cron Safe)
+    # Distributed Locking (Scan Lock + Per-Album Sync Locks)
     # =========================================================================
 
-    def acquire_scan_lock(self, locked_by: str = "cron", timeout_minutes: int = 15) -> bool:
+    @staticmethod
+    def _bound_lock_name(lock_name: str) -> str:
+        raw = (lock_name or "global_scan").strip()
+        if len(raw) <= 64:
+            return raw
+        prefix = raw[:15]
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
+        return f"{prefix}{digest}"
+
+    def acquire_named_lock(self, lock_name: str, locked_by: str = "cron", timeout_minutes: int = 15) -> bool:
         """
-        Attempt to acquire distributed scan lock atomically.
-        Returns True if acquired, False if an active scan is already running.
+        Attempt to acquire a named distributed lock atomically.
+        Returns True if acquired, False if an active non-expired lock is held.
         """
+        safe_lock_name = self._bound_lock_name(lock_name)
         now = time.time()
         expires_at = now + (timeout_minutes * 60)
         conn = self._get_connection()
@@ -324,63 +352,84 @@ class LatestReleasesDB:
             if self.is_postgres:
                 cur.execute("""
                     INSERT INTO latest_releases_lock (lock_name, locked_at, locked_by, expires_at)
-                    VALUES ('global_scan', %s, %s, %s)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (lock_name) DO UPDATE
                     SET locked_at = EXCLUDED.locked_at,
                         locked_by = EXCLUDED.locked_by,
                         expires_at = EXCLUDED.expires_at
                     WHERE latest_releases_lock.expires_at IS NULL OR latest_releases_lock.expires_at <= %s;
-                """, (now, locked_by, expires_at, now))
+                """, (safe_lock_name, now, locked_by, expires_at, now))
                 acquired = (cur.rowcount == 1)
                 conn.commit()
                 return acquired
 
-            cur.execute("SELECT lock_name, locked_at, locked_by, expires_at FROM latest_releases_lock WHERE lock_name = 'global_scan';")
+            cur.execute(
+                "SELECT lock_name, locked_at, locked_by, expires_at FROM latest_releases_lock WHERE lock_name = ?;",
+                (safe_lock_name,)
+            )
             row = cur.fetchone()
 
             if row:
                 r_expires_at = row[3] if isinstance(row, tuple) else row["expires_at"]
                 if r_expires_at and now < r_expires_at:
-                    # Scan is actively running and has not expired
                     return False
-                # Lock expired, take over
                 cur.execute("""
                     UPDATE latest_releases_lock
                     SET locked_at = ?, locked_by = ?, expires_at = ?
-                    WHERE lock_name = 'global_scan';
-                """, (now, locked_by, expires_at))
+                    WHERE lock_name = ?;
+                """, (now, locked_by, expires_at, safe_lock_name))
             else:
                 cur.execute("""
                     INSERT INTO latest_releases_lock (lock_name, locked_at, locked_by, expires_at)
-                    VALUES ('global_scan', ?, ?, ?);
-                """, (now, locked_by, expires_at))
+                    VALUES (?, ?, ?, ?);
+                """, (safe_lock_name, now, locked_by, expires_at))
 
             conn.commit()
             return True
         finally:
             conn.close()
 
-    def release_scan_lock(self, locked_by: Optional[str] = None):
-        """Release distributed scan lock."""
+    def release_named_lock(self, lock_name: str, locked_by: Optional[str] = None):
+        """Release a named distributed lock."""
+        safe_lock_name = self._bound_lock_name(lock_name)
         conn = self._get_connection()
         try:
             cur = conn.cursor()
             if locked_by:
                 if self.is_postgres:
-                    cur.execute("DELETE FROM latest_releases_lock WHERE lock_name = 'global_scan' AND locked_by = %s;", (locked_by,))
+                    cur.execute(
+                        "DELETE FROM latest_releases_lock WHERE lock_name = %s AND locked_by = %s;",
+                        (safe_lock_name, locked_by)
+                    )
                 else:
-                    cur.execute("DELETE FROM latest_releases_lock WHERE lock_name = 'global_scan' AND locked_by = ?;", (locked_by,))
+                    cur.execute(
+                        "DELETE FROM latest_releases_lock WHERE lock_name = ? AND locked_by = ?;",
+                        (safe_lock_name, locked_by)
+                    )
             else:
-                cur.execute("DELETE FROM latest_releases_lock WHERE lock_name = 'global_scan';")
+                if self.is_postgres:
+                    cur.execute("DELETE FROM latest_releases_lock WHERE lock_name = %s;", (safe_lock_name,))
+                else:
+                    cur.execute("DELETE FROM latest_releases_lock WHERE lock_name = ?;", (safe_lock_name,))
             conn.commit()
         finally:
             conn.close()
 
-    def get_lock_status(self) -> Dict[str, Any]:
+    def get_named_lock_status(self, lock_name: str) -> Dict[str, Any]:
+        safe_lock_name = self._bound_lock_name(lock_name)
         conn = self._get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT lock_name, locked_at, locked_by, expires_at FROM latest_releases_lock WHERE lock_name = 'global_scan';")
+            if self.is_postgres:
+                cur.execute(
+                    "SELECT lock_name, locked_at, locked_by, expires_at FROM latest_releases_lock WHERE lock_name = %s;",
+                    (safe_lock_name,)
+                )
+            else:
+                cur.execute(
+                    "SELECT lock_name, locked_at, locked_by, expires_at FROM latest_releases_lock WHERE lock_name = ?;",
+                    (safe_lock_name,)
+                )
             row = cur.fetchone()
             if not row:
                 return {"is_locked": False}
@@ -396,6 +445,20 @@ class LatestReleasesDB:
             }
         finally:
             conn.close()
+
+    def acquire_scan_lock(self, locked_by: str = "cron", timeout_minutes: int = 15) -> bool:
+        """
+        Attempt to acquire distributed scan lock atomically.
+        Returns True if acquired, False if an active scan is already running.
+        """
+        return self.acquire_named_lock("global_scan", locked_by=locked_by, timeout_minutes=timeout_minutes)
+
+    def release_scan_lock(self, locked_by: Optional[str] = None):
+        """Release distributed scan lock."""
+        self.release_named_lock("global_scan", locked_by=locked_by)
+
+    def get_lock_status(self) -> Dict[str, Any]:
+        return self.get_named_lock_status("global_scan")
 
     # =========================================================================
     # Scan History Telemetry
@@ -993,6 +1056,240 @@ class LatestReleasesDB:
             else:
                 cur.execute("UPDATE discovered_songs SET tracking_status = ?, last_checked_at = ? WHERE id = ?;", (new_status.value, now, song_id))
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_notifications_by_ids(self, notification_ids: List[int]) -> List[Dict[str, Any]]:
+        """Fetch notifications by IDs preserving caller order and decoding details_json."""
+        clean_ids: List[int] = []
+        seen = set()
+        for raw_id in notification_ids or []:
+            try:
+                nid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if nid > 0 and nid not in seen:
+                seen.add(nid)
+                clean_ids.append(nid)
+        if not clean_ids:
+            return []
+
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            ph = "%s" if self.is_postgres else "?"
+            placeholders = ", ".join([ph] * len(clean_ids))
+            query = f"""
+                SELECT id, album_id, notification_type, title, message, album_name, artwork_url,
+                       music_director, year, source_url, missing_count, is_read, created_at,
+                       updated_at, details_json, dedup_hash, language, resolution_status,
+                       source_page, source_position
+                FROM notifications
+                WHERE id IN ({placeholders});
+            """
+            cur.execute(query, tuple(clean_ids))
+            rows = cur.fetchall()
+            col_names = [desc[0].lower() for desc in (cur.description or [])]
+            by_id: Dict[int, Dict[str, Any]] = {}
+            for r in rows:
+                if isinstance(r, tuple) and col_names:
+                    d = dict(zip(col_names, r))
+                else:
+                    d = {k.lower(): v for k, v in dict(r).items()}
+                d["is_read"] = bool(d.get("is_read"))
+                d["language"] = d.get("language") or "Telugu"
+                d["resolution_status"] = d.get("resolution_status") or "PENDING"
+                try:
+                    d["songs"] = json.loads(d.get("details_json") or "[]")
+                except Exception:
+                    d["songs"] = []
+                by_id[int(d["id"])] = d
+            return [by_id[nid] for nid in clean_ids if nid in by_id]
+        finally:
+            conn.close()
+
+    def get_notification_by_id(self, notification_id: int) -> Optional[Dict[str, Any]]:
+        rows = self.get_notifications_by_ids([notification_id])
+        return rows[0] if rows else None
+
+    # =========================================================================
+    # Direct-to-MusicData Background Sync Job Persistence
+    # =========================================================================
+
+    @staticmethod
+    def _decode_sync_job_row(row_dict: Dict[str, Any]) -> Dict[str, Any]:
+        for src_col, dest_key, default_val in (
+            ("request_json", "request", {}),
+            ("progress_json", "progress", {}),
+            ("result_json", "result", None),
+        ):
+            raw = row_dict.get(src_col)
+            if raw:
+                try:
+                    row_dict[dest_key] = json.loads(raw)
+                except Exception:
+                    row_dict[dest_key] = default_val
+            else:
+                row_dict[dest_key] = default_val
+        return row_dict
+
+    def get_sync_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            ph = "%s" if self.is_postgres else "?"
+            cur.execute(f"""
+                SELECT job_id, idempotency_key, parent_job_id, status, created_at, updated_at,
+                       completed_at, request_json, progress_json, result_json, error_message
+                FROM musicdata_sync_jobs
+                WHERE job_id = {ph};
+            """, (job_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            col_names = [desc[0].lower() for desc in (cur.description or [])]
+            d = dict(zip(col_names, row)) if isinstance(row, tuple) and col_names else {k.lower(): v for k, v in dict(row).items()}
+            return self._decode_sync_job_row(d)
+        finally:
+            conn.close()
+
+    def get_sync_job_by_idempotency(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        if not idempotency_key:
+            return None
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            ph = "%s" if self.is_postgres else "?"
+            cur.execute(f"""
+                SELECT job_id, idempotency_key, parent_job_id, status, created_at, updated_at,
+                       completed_at, request_json, progress_json, result_json, error_message
+                FROM musicdata_sync_jobs
+                WHERE idempotency_key = {ph};
+            """, (idempotency_key,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            col_names = [desc[0].lower() for desc in (cur.description or [])]
+            d = dict(zip(col_names, row)) if isinstance(row, tuple) and col_names else {k.lower(): v for k, v in dict(row).items()}
+            return self._decode_sync_job_row(d)
+        finally:
+            conn.close()
+
+    def create_sync_job(
+        self,
+        job_id: str,
+        idempotency_key: Optional[str],
+        status: str,
+        request_data: Dict[str, Any],
+        progress_data: Dict[str, Any],
+        parent_job_id: Optional[str] = None
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Persist a new Add-to-MusicData sync job or return existing idempotent job.
+        Returns (created_new: bool, job_dict).
+        """
+        if idempotency_key:
+            existing = self.get_sync_job_by_idempotency(idempotency_key)
+            if existing:
+                return False, existing
+
+        now = time.time()
+        req_json = json.dumps(request_data or {})
+        prog_json = json.dumps(progress_data or {})
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            if self.is_postgres:
+                try:
+                    cur.execute("""
+                        INSERT INTO musicdata_sync_jobs (
+                            job_id, idempotency_key, parent_job_id, status,
+                            created_at, updated_at, completed_at,
+                            request_json, progress_json, result_json, error_message
+                        ) VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s, NULL, NULL);
+                    """, (job_id, idempotency_key, parent_job_id, status, now, now, req_json, prog_json))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    if idempotency_key:
+                        existing = self.get_sync_job_by_idempotency(idempotency_key)
+                        if existing:
+                            return False, existing
+                    raise
+            else:
+                try:
+                    cur.execute("""
+                        INSERT INTO musicdata_sync_jobs (
+                            job_id, idempotency_key, parent_job_id, status,
+                            created_at, updated_at, completed_at,
+                            request_json, progress_json, result_json, error_message
+                        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL);
+                    """, (job_id, idempotency_key, parent_job_id, status, now, now, req_json, prog_json))
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    if idempotency_key:
+                        existing = self.get_sync_job_by_idempotency(idempotency_key)
+                        if existing:
+                            return False, existing
+                    raise
+        finally:
+            conn.close()
+
+        created = self.get_sync_job(job_id)
+        return True, created or {"job_id": job_id, "status": status}
+
+    def update_sync_job(
+        self,
+        job_id: str,
+        status: str,
+        progress_data: Dict[str, Any],
+        result_data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+        completed_at: Optional[float] = None
+    ):
+        now = time.time()
+        prog_json = json.dumps(progress_data or {})
+        res_json = json.dumps(result_data) if result_data is not None else None
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute("""
+                    UPDATE musicdata_sync_jobs
+                    SET status = %s, updated_at = %s, completed_at = COALESCE(%s, completed_at),
+                        progress_json = %s, result_json = COALESCE(%s, result_json),
+                        error_message = %s
+                    WHERE job_id = %s;
+                """, (status, now, completed_at, prog_json, res_json, error_message, job_id))
+            else:
+                cur.execute("""
+                    UPDATE musicdata_sync_jobs
+                    SET status = ?, updated_at = ?, completed_at = COALESCE(?, completed_at),
+                        progress_json = ?, result_json = COALESCE(?, result_json),
+                        error_message = ?
+                    WHERE job_id = ?;
+                """, (status, now, completed_at, prog_json, res_json, error_message, job_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_recent_sync_jobs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"""
+                SELECT job_id, idempotency_key, parent_job_id, status, created_at, updated_at,
+                       completed_at, request_json, progress_json, result_json, error_message
+                FROM musicdata_sync_jobs
+                ORDER BY created_at DESC LIMIT {int(limit)};
+            """)
+            rows = cur.fetchall()
+            col_names = [desc[0].lower() for desc in (cur.description or [])]
+            results = []
+            for r in rows:
+                d = dict(zip(col_names, r)) if isinstance(r, tuple) and col_names else {k.lower(): v for k, v in dict(r).items()}
+                results.append(self._decode_sync_job_row(d))
+            return results
         finally:
             conn.close()
 

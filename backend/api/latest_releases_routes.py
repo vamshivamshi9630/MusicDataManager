@@ -8,9 +8,17 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from backend.core.config import settings
+from backend.core.repository import PathTraversalError
+from backend.services.catalog import CatalogLookupError
 from backend.services.latest_releases.models import TrackingStatus
 from backend.services.latest_releases.db import get_latest_releases_db
 from backend.services.latest_releases.discovery import LatestReleasesDiscoveryEngine
+from backend.services.latest_releases.musicdata_uploader import (
+    MusicDataSyncOrchestrator,
+    UploadPipelineError,
+    build_add_to_musicdata_preview,
+    sanitize_sensitive_text,
+)
 
 logger = logging.getLogger("musicdata.api.latest_releases")
 
@@ -19,6 +27,22 @@ router = APIRouter(prefix="/api/latest-releases", tags=["Latest Releases Discove
 class TrackingUpdateRequest(BaseModel):
     song_id: int
     status: str
+
+class AlbumSongSelection(BaseModel):
+    notification_id: int
+    selected_song_keys: Optional[List[str]] = None
+    selected_song_ids: Optional[List[int]] = None
+    selected_song_titles: Optional[List[str]] = None
+
+class AddToMusicDataPreviewRequest(BaseModel):
+    notification_ids: List[int]
+
+class AddToMusicDataStartRequest(BaseModel):
+    selections: List[AlbumSongSelection]
+    idempotency_key: Optional[str] = None
+
+class AddToMusicDataRetryRequest(BaseModel):
+    idempotency_key: Optional[str] = None
 
 ALLOWED_DOWNLOAD_DOMAINS = [
     "naasongs.com.co",
@@ -289,3 +313,94 @@ def cron_trigger(
     engine = LatestReleasesDiscoveryEngine()
     result = engine.run_scan(locked_by="external_cron_webhook", max_pages=max_pages, limit_albums=limit)
     return result
+
+
+def _handle_uploader_error(exc: Exception) -> HTTPException:
+    msg = sanitize_sensitive_text(exc)
+    if isinstance(exc, CatalogLookupError):
+        return HTTPException(status_code=503, detail=msg)
+    if msg.startswith("CONFLICT:"):
+        return HTTPException(status_code=409, detail=msg.replace("CONFLICT:", "", 1).strip())
+    if msg.startswith("NOT_FOUND:"):
+        return HTTPException(status_code=404, detail=msg.replace("NOT_FOUND:", "", 1).strip())
+    return HTTPException(status_code=400, detail=msg)
+
+
+@router.post("/add-to-musicdata/preview")
+def preview_add_to_musicdata(req: AddToMusicDataPreviewRequest):
+    """Validate selected notifications against live MusicData catalog and return structured preview."""
+    try:
+        return build_add_to_musicdata_preview(notification_ids=req.notification_ids)
+    except (CatalogLookupError, UploadPipelineError, PathTraversalError) as e:
+        raise _handle_uploader_error(e)
+
+
+@router.post("/add-to-musicdata/start", status_code=202)
+def start_add_to_musicdata(req: AddToMusicDataStartRequest):
+    """
+    Validate selections, enforce idempotency and per-album concurrency locks,
+    and start background MusicData download/validation/GitHub sync job.
+    """
+    orchestrator = MusicDataSyncOrchestrator()
+    try:
+        selections_payload = [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in req.selections]
+        res = orchestrator.start_sync_job(
+            selections=selections_payload,
+            idempotency_key=req.idempotency_key,
+            run_async=True,
+        )
+        job = res["job"]
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "duplicate_request": res.get("duplicate_request", False),
+                "job_id": job["job_id"],
+                "status": job["status"],
+                "job": job,
+            },
+        )
+    except (CatalogLookupError, UploadPipelineError, PathTraversalError) as e:
+        raise _handle_uploader_error(e)
+
+
+@router.get("/add-to-musicdata/jobs")
+def list_add_to_musicdata_jobs(limit: int = Query(15, ge=1, le=50)):
+    """List recent direct-to-MusicData sync jobs."""
+    db = get_latest_releases_db()
+    return {"success": True, "jobs": db.list_recent_sync_jobs(limit=limit)}
+
+
+@router.get("/add-to-musicdata/jobs/{job_id}")
+def get_add_to_musicdata_job(job_id: str):
+    """Retrieve live progress and final completion summary for a MusicData sync job."""
+    db = get_latest_releases_db()
+    job = db.get_sync_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Sync job '{job_id}' not found.")
+    return {"success": True, "job": job}
+
+
+@router.post("/add-to-musicdata/jobs/{job_id}/retry", status_code=202)
+def retry_add_to_musicdata_job(job_id: str, req: Optional[AddToMusicDataRetryRequest] = None):
+    """Retry ONLY failed songs from a completed/partially-failed MusicData sync job."""
+    orchestrator = MusicDataSyncOrchestrator()
+    try:
+        res = orchestrator.retry_failed_job(
+            parent_job_id=job_id,
+            idempotency_key=req.idempotency_key if req else None,
+            run_async=True,
+        )
+        job = res["job"]
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "duplicate_request": res.get("duplicate_request", False),
+                "job_id": job["job_id"],
+                "status": job["status"],
+                "job": job,
+            },
+        )
+    except (CatalogLookupError, UploadPipelineError, PathTraversalError) as e:
+        raise _handle_uploader_error(e)

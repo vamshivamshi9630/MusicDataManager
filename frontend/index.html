@@ -279,6 +279,10 @@
                     </div>
                 </div>
                 <div class="flex items-center space-x-2">
+                    <button type="button" id="btn-add-to-musicdata" onclick="openAddToMusicDataPreview()" disabled class="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition border border-brand-500 shadow-sm" title="Add selected notifications directly to MusicData GitHub repository">
+                        <span>ADD TO MUSICDATA</span>
+                        <span id="notif-add-btn-count" class="px-1.5 py-0.2 rounded-full bg-slate-950/50 text-[10px] font-extrabold">0</span>
+                    </button>
                     <button type="button" id="btn-notif-check-now" onclick="triggerCheckNow()" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition border border-slate-700" title="Check naasongs.com.co right now">
                         <i id="notif-check-icon" class="icon-refresh-cw text-xs"></i>
                         <span id="notif-check-text">Check Now</span>
@@ -287,6 +291,16 @@
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                 </div>
+            </div>
+
+            <!-- Bulk Selection Bar (Direct-to-MusicData) -->
+            <div id="notif-selection-bar" class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-950/70 border border-slate-800 text-xs">
+                <div class="flex items-center gap-2">
+                    <button type="button" id="btn-notif-select-all" onclick="selectAllEligibleNotifications()" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition border border-slate-700">Select All</button>
+                    <button type="button" id="btn-notif-deselect-all" onclick="deselectAllNotifications()" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition border border-slate-700">Deselect All</button>
+                    <span id="notif-selected-count" class="text-slate-300 font-semibold ml-1">0 selected</span>
+                </div>
+                <span class="text-[11px] text-slate-400 hidden sm:inline">Select NEW ALBUM or MISSING SONGS items to sync directly</span>
             </div>
 
             <!-- Language Filter Chips (V2) -->
@@ -367,6 +381,78 @@
                 <div class="flex items-center space-x-2">
                     <button type="button" id="btn-batch-dl-retry" onclick="retryFailedDownloads()" class="hidden px-3 py-1.5 bg-amber-600/20 text-amber-300 border border-amber-600/40 rounded-lg text-xs font-semibold hover:bg-amber-600/30 transition">Retry Failed</button>
                     <button type="button" id="btn-batch-dl-done" onclick="closeBatchDownloadModal()" class="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add to MusicData Review & Preview Modal -->
+    <div id="add-musicdata-preview-modal" class="hidden fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-4 sm:p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div>
+                    <h3 class="font-bold text-base sm:text-lg text-white">Review & Confirm: Add to MusicData</h3>
+                    <p id="md-preview-subtitle" class="text-xs text-slate-400 mt-0.5">Verify albums, tracks, artwork, and destination folders before starting</p>
+                </div>
+                <button type="button" onclick="closeAddMusicDataPreviewModal()" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <div id="md-preview-summary" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300">
+                Inspecting live MusicData catalog...
+            </div>
+
+            <div id="md-preview-body" class="space-y-3 overflow-y-auto pr-1 flex-1 min-h-[200px]">
+                <div class="text-center py-8 text-slate-500 text-sm">Preparing preview...</div>
+            </div>
+
+            <div class="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                <span id="md-preview-selected-summary" class="text-xs text-slate-300 font-semibold">0 songs selected</span>
+                <div class="flex items-center space-x-2">
+                    <button type="button" onclick="closeAddMusicDataPreviewModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition">Cancel</button>
+                    <button type="button" id="btn-md-confirm-start" onclick="confirmAndStartMusicDataSync()" disabled class="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition shadow-sm">
+                        Confirm & Add to MusicData
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add to MusicData Live Processing Status Modal -->
+    <div id="add-musicdata-progress-modal" class="hidden fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-4 sm:p-6 space-y-4 shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div>
+                    <h3 class="font-bold text-base sm:text-lg text-white flex items-center gap-2" id="md-progress-title">
+                        <span>Adding Selected Releases to MusicData</span>
+                    </h3>
+                    <p id="md-progress-step" class="text-xs text-slate-400 mt-0.5">Waiting...</p>
+                </div>
+                <span id="md-progress-status-pill" class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-950 text-amber-300 border border-amber-700">Waiting</span>
+            </div>
+
+            <div class="space-y-1.5">
+                <div class="flex items-center justify-between text-xs text-slate-300">
+                    <span id="md-progress-counts">0 added • 0 skipped • 0 failed</span>
+                    <span id="md-progress-percent" class="font-bold text-brand-400">0%</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-700">
+                    <div id="md-progress-bar" class="bg-brand-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div id="md-progress-albums" class="space-y-3 overflow-y-auto pr-1 flex-1 min-h-[200px]">
+            </div>
+
+            <div id="md-progress-completion" class="hidden p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+            </div>
+
+            <div class="pt-2 border-t border-slate-800 flex items-center justify-between">
+                <span id="md-progress-job-id" class="text-[11px] font-mono text-slate-500"></span>
+                <div class="flex items-center space-x-2">
+                    <button type="button" id="btn-md-retry-failed" onclick="retryFailedMusicDataSync()" class="hidden px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 rounded-lg text-xs font-bold transition">Retry Failed Songs</button>
+                    <button type="button" id="btn-md-progress-close" onclick="closeAddMusicDataProgressModal()" class="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition">Close</button>
                 </div>
             </div>
         </div>
@@ -1225,8 +1311,10 @@
             });
 
             if (cat === 'history') {
+                updateNotifSelectionUI();
                 loadScanHistory();
             } else {
+                updateNotifSelectionUI();
                 loadNotifications();
             }
         }
@@ -1291,8 +1379,63 @@
             }
         }
 
+        let selectedNotifIds = new Set();
+        let currentEligibleNotifIds = [];
+
+        function isNotificationSelectable(n) {
+            const eligibleTypes = ['NEW_ALBUM', 'NEW_SONG', 'MISSING_SONGS'];
+            if (!eligibleTypes.includes(n.notification_type)) return false;
+            if ((n.resolution_status || 'PENDING') === 'COMPLETED') return false;
+            const songs = n.songs || [];
+            return songs.some(s => !s.exists_in_catalog && s.source_audio_url && (s.download_authorized !== false) && (s.link_available !== false));
+        }
+
+        function updateNotifSelectionUI() {
+            const count = selectedNotifIds.size;
+            const countEl = document.getElementById('notif-selected-count');
+            const badgeEl = document.getElementById('notif-add-btn-count');
+            const addBtn = document.getElementById('btn-add-to-musicdata');
+            const selBar = document.getElementById('notif-selection-bar');
+
+            if (selBar) {
+                const showBar = currentNotifCategory !== 'history' && currentNotifCategory !== 'completed';
+                selBar.classList.toggle('hidden', !showBar);
+            }
+            if (countEl) countEl.innerText = `${count} selected`;
+            if (badgeEl) badgeEl.innerText = String(count);
+            if (addBtn) addBtn.disabled = (count === 0);
+        }
+
+        function toggleNotifSelection(notifId, checked) {
+            const numId = Number(notifId);
+            if (checked) {
+                selectedNotifIds.add(numId);
+            } else {
+                selectedNotifIds.delete(numId);
+            }
+            updateNotifSelectionUI();
+        }
+
+        function selectAllEligibleNotifications() {
+            currentEligibleNotifIds.forEach(id => selectedNotifIds.add(Number(id)));
+            document.querySelectorAll('.notif-select-checkbox').forEach(cb => {
+                cb.checked = true;
+            });
+            updateNotifSelectionUI();
+        }
+
+        function deselectAllNotifications() {
+            selectedNotifIds.clear();
+            document.querySelectorAll('.notif-select-checkbox').forEach(cb => {
+                cb.checked = false;
+            });
+            updateNotifSelectionUI();
+        }
+
         function renderNotifications(notifs) {
             const listContainer = document.getElementById('notification-list');
+            currentEligibleNotifIds = [];
+
             if (notifs.length === 0) {
                 listContainer.innerHTML = `
                     <div class="text-center py-10 px-4 bg-slate-950/40 rounded-xl border border-slate-800">
@@ -1301,6 +1444,7 @@
                         <p class="text-xs text-slate-500 mt-1">No pending releases found for the selected language and category.</p>
                     </div>
                 `;
+                updateNotifSelectionUI();
                 return;
             }
 
@@ -1319,8 +1463,21 @@
                 return (Number(a.id) || 0) - (Number(b.id) || 0);
             });
 
+            const visibleIdSet = new Set(sortedNotifs.map(n => Number(n.id)));
+            selectedNotifIds.forEach(id => {
+                const matchN = sortedNotifs.find(item => Number(item.id) === Number(id));
+                if (!visibleIdSet.has(id) || (matchN && !isNotificationSelectable(matchN))) {
+                    selectedNotifIds.delete(id);
+                }
+            });
+
             let html = '';
             sortedNotifs.forEach(n => {
+                const selectable = isNotificationSelectable(n);
+                if (selectable) {
+                    currentEligibleNotifIds.push(Number(n.id));
+                }
+                const isSelected = selectable && selectedNotifIds.has(Number(n.id));
                 let badgeClass = 'bg-amber-900/40 text-amber-300 border-amber-800';
                 let typeLabel = (n.notification_type || 'NEW_ALBUM').replace('_', ' ');
                 if (n.notification_type === 'NEW_ALBUM') {
@@ -1337,6 +1494,9 @@
                 const langBadgeStyle = getLanguageBadgeStyles(lang);
 
                 const cardBg = n.is_read ? 'bg-slate-950/40 border-slate-800 opacity-80' : 'bg-slate-950 border-slate-700/80 shadow-md';
+                const checkboxHtml = selectable
+                    ? `<input type="checkbox" class="notif-select-checkbox mt-1 w-4 h-4 rounded border-slate-600 bg-slate-900 text-brand-500 focus:ring-brand-500 cursor-pointer shrink-0" data-notif-id="${n.id}" ${isSelected ? 'checked' : ''} onchange="toggleNotifSelection(${n.id}, this.checked)" title="Select album for ADD TO MUSICDATA">`
+                    : `<span class="w-4 shrink-0"></span>`;
                 const artHtml = n.artwork_url
                     ? `<img src="${n.artwork_url}" class="w-12 h-12 rounded-lg object-cover bg-slate-800 border border-slate-700 shrink-0" onerror="this.onerror=null;this.src='';this.className='hidden';">`
                     : `<div class="w-12 h-12 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-500 shrink-0"><i class="icon-disc text-xl"></i></div>`;
@@ -1476,6 +1636,7 @@
                     <div class="p-3.5 rounded-xl border ${cardBg} transition space-y-2">
                         <div class="flex items-start justify-between gap-3">
                             <div class="flex items-start space-x-3">
+                                ${checkboxHtml}
                                 ${artHtml}
                                 <div>
                                     <div class="flex items-center gap-2 flex-wrap">
@@ -1511,6 +1672,7 @@
             });
 
             listContainer.innerHTML = html;
+            updateNotifSelectionUI();
         }
 
         // =========================================================================
@@ -1835,6 +1997,367 @@
                     searchInput.dispatchEvent(new Event('input'));
                 }
                 window.scrollTo({ top: 120, behavior: 'smooth' });
+            }
+        }
+
+        // =========================================================================
+        // Direct-to-MusicData Review, Preview, Sync & Live Progress Controller
+        // =========================================================================
+        let mdPreviewState = null;
+        let mdSelectedSongKeysByNotif = {};
+        let mdActiveJobId = null;
+        let mdPollTimer = null;
+
+        async function openAddToMusicDataPreview() {
+            const ids = Array.from(selectedNotifIds);
+            if (ids.length === 0) return;
+
+            const modal = document.getElementById('add-musicdata-preview-modal');
+            const summaryEl = document.getElementById('md-preview-summary');
+            const bodyEl = document.getElementById('md-preview-body');
+            const confirmBtn = document.getElementById('btn-md-confirm-start');
+
+            modal.classList.remove('hidden');
+            confirmBtn.disabled = true;
+            summaryEl.innerHTML = '<span class="text-amber-300"><i class="icon-loader animate-spin mr-1.5"></i> Verifying albums & songs against live MusicData GitHub catalog...</span>';
+            bodyEl.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">Loading review details...</div>';
+
+            try {
+                const res = await fetch(`${API_BASE}/latest-releases/add-to-musicdata/preview`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ notification_ids: ids })
+                });
+                const data = await parseJsonResponse(res);
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || data.detail || 'Preview verification failed');
+                }
+
+                mdPreviewState = data;
+                mdSelectedSongKeysByNotif = {};
+                (data.albums || []).forEach(alb => {
+                    const selectedSet = new Set();
+                    (alb.songs || []).forEach(s => {
+                        if (s.selectable && s.default_selected) {
+                            selectedSet.add(s.song_key);
+                        }
+                    });
+                    mdSelectedSongKeysByNotif[alb.notification_id] = selectedSet;
+                });
+
+                renderAddToMusicDataPreview();
+            } catch (e) {
+                summaryEl.innerHTML = `<span class="text-rose-400 font-semibold">❌ Preview Error: ${escapeHtml(String(e.message || e))}</span>`;
+                bodyEl.innerHTML = `<div class="p-4 rounded-xl bg-rose-950/40 border border-rose-800 text-xs text-rose-200">${escapeHtml(String(e.message || e))}</div>`;
+            }
+        }
+
+        function closeAddMusicDataPreviewModal() {
+            document.getElementById('add-musicdata-preview-modal').classList.add('hidden');
+        }
+
+        function togglePreviewSongSelection(notifId, songKey, checked) {
+            if (!mdSelectedSongKeysByNotif[notifId]) {
+                mdSelectedSongKeysByNotif[notifId] = new Set();
+            }
+            if (checked) {
+                mdSelectedSongKeysByNotif[notifId].add(songKey);
+            } else {
+                mdSelectedSongKeysByNotif[notifId].delete(songKey);
+            }
+            updatePreviewSelectionSummary();
+        }
+
+        function updatePreviewSelectionSummary() {
+            let totalSelected = 0;
+            if (mdPreviewState && mdPreviewState.albums) {
+                mdPreviewState.albums.forEach(alb => {
+                    const setRef = mdSelectedSongKeysByNotif[alb.notification_id] || new Set();
+                    totalSelected += setRef.size;
+                    const albCountEl = document.getElementById(`md-prev-alb-count-${alb.notification_id}`);
+                    if (albCountEl) albCountEl.innerText = `${setRef.size} to download`;
+                });
+            }
+            document.getElementById('md-preview-selected-summary').innerText = `${totalSelected} song(s) selected to download & upload`;
+            document.getElementById('btn-md-confirm-start').disabled = (totalSelected === 0);
+        }
+
+        function renderAddToMusicDataPreview() {
+            if (!mdPreviewState) return;
+            const summaryEl = document.getElementById('md-preview-summary');
+            const bodyEl = document.getElementById('md-preview-body');
+            const s = mdPreviewState.summary || {};
+
+            summaryEl.innerHTML = `
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span>Target: <b class="text-brand-400">${escapeHtml(mdPreviewState.target_repository || 'vamshivamshi9630/MusicData')}</b> (${escapeHtml(mdPreviewState.target_branch || 'main')})</span>
+                    <span><b>${s.total_albums || 0}</b> albums • <b class="text-cyan-400">${s.total_songs_to_download || 0}</b> ready to add • <b class="text-emerald-400">${s.total_already_existing || 0}</b> already in repo</span>
+                </div>
+            `;
+
+            bodyEl.innerHTML = (mdPreviewState.albums || []).map(alb => {
+                const selSet = mdSelectedSongKeysByNotif[alb.notification_id] || new Set();
+                const modeBadge = alb.is_new_album
+                    ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-700">New Album</span>'
+                    : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-700">Existing Album</span>';
+
+                const artThumb = alb.artwork_url
+                    ? `<img src="${escapeHtml(alb.artwork_url)}" class="w-12 h-12 rounded-lg object-cover border border-slate-700 shrink-0">`
+                    : `<div class="w-12 h-12 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-500 shrink-0"><i class="icon-disc text-lg"></i></div>`;
+
+                const artNote = alb.has_existing_artwork
+                    ? '<span class="text-emerald-400">Existing artwork preserved</span>'
+                    : (alb.artwork_will_download ? '<span class="text-cyan-400">Artwork will be converted & added</span>' : '<span class="text-slate-500">No artwork update</span>');
+
+                const identityAlert = !alb.identity_verified
+                    ? `<div class="p-2.5 rounded-lg bg-rose-950/60 border border-rose-800 text-[11px] text-rose-200 font-semibold">⚠ ${escapeHtml(alb.identity_error || 'Identity mismatch')}</div>`
+                    : '';
+
+                const songsRows = (alb.songs || []).map(song => {
+                    const checked = selSet.has(song.song_key);
+                    if (song.already_in_catalog) {
+                        return `
+                            <div class="flex items-center justify-between gap-2 py-1.5 px-2 rounded bg-slate-900/50 text-xs opacity-75">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <input type="checkbox" disabled class="w-3.5 h-3.5 rounded opacity-40">
+                                    <span class="text-slate-400 truncate">${String(song.track_number).padStart(2, '0')}. ${escapeHtml(song.song_title)}</span>
+                                </div>
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 shrink-0">✓ Exists (Skipped)</span>
+                            </div>
+                        `;
+                    }
+                    const disabledAttr = song.selectable ? '' : 'disabled';
+                    const warnHtml = song.warning ? `<p class="text-[10px] text-amber-300 pl-6">${escapeHtml(song.warning)}</p>` : '';
+                    return `
+                        <div class="py-1.5 px-2 rounded hover:bg-slate-900/70">
+                            <div class="flex items-center justify-between gap-2 text-xs">
+                                <label class="flex items-center gap-2 min-w-0 cursor-pointer">
+                                    <input type="checkbox" ${checked ? 'checked' : ''} ${disabledAttr} onchange="togglePreviewSongSelection(${alb.notification_id}, '${escapeHtml(song.song_key)}', this.checked)" class="w-3.5 h-3.5 rounded border-slate-600 bg-slate-900 text-brand-500">
+                                    <span class="text-slate-200 truncate font-medium">${String(song.track_number).padStart(2, '0')}. ${escapeHtml(song.song_title)}</span>
+                                </label>
+                                <div class="flex items-center gap-1.5 shrink-0 text-[10px]">
+                                    ${song.available_bitrate ? `<span class="px-1.5 py-0.5 rounded bg-cyan-950/70 text-cyan-300 border border-cyan-800/60">${escapeHtml(song.available_bitrate)}</span>` : ''}
+                                    <span class="text-slate-400">${escapeHtml(song.download_source || 'naasongs')}</span>
+                                </div>
+                            </div>
+                            ${warnHtml}
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="flex items-start gap-3 min-w-0">
+                                ${artThumb}
+                                <div class="min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <h4 class="font-bold text-sm text-white">${escapeHtml(alb.album_name)}</h4>
+                                        <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded border ${getLanguageBadgeStyles(alb.language)}">${escapeHtml(alb.language)}</span>
+                                        ${modeBadge}
+                                        <span class="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">${escapeHtml(alb.notification_type)}</span>
+                                    </div>
+                                    <p class="text-[11px] text-slate-400 mt-1">
+                                        Destination Folder: <code class="text-brand-400 font-mono">${escapeHtml(alb.destination_folder || 'Unresolved')}/</code> • ${artNote}
+                                    </p>
+                                    <p class="text-[11px] text-slate-400">
+                                        Director: ${escapeHtml(alb.music_director)} (${alb.year || 2026})
+                                    </p>
+                                </div>
+                            </div>
+                            <span id="md-prev-alb-count-${alb.notification_id}" class="text-[11px] font-bold text-cyan-400 shrink-0">${selSet.size} to download</span>
+                        </div>
+                        ${identityAlert}
+                        <div class="space-y-1 border-t border-slate-800/80 pt-2">
+                            ${songsRows}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            updatePreviewSelectionSummary();
+        }
+
+        async function confirmAndStartMusicDataSync() {
+            if (!mdPreviewState || !mdPreviewState.albums) return;
+            const selections = [];
+            mdPreviewState.albums.forEach(alb => {
+                const selSet = mdSelectedSongKeysByNotif[alb.notification_id];
+                if (selSet && selSet.size > 0 && alb.identity_verified) {
+                    selections.push({
+                        notification_id: alb.notification_id,
+                        selected_song_keys: Array.from(selSet)
+                    });
+                }
+            });
+            if (selections.length === 0) return;
+
+            const btn = document.getElementById('btn-md-confirm-start');
+            btn.disabled = true;
+            const idempotencyKey = `ui_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+            try {
+                const res = await fetch(`${API_BASE}/latest-releases/add-to-musicdata/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ selections, idempotency_key: idempotencyKey })
+                });
+                const data = await parseJsonResponse(res);
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || data.detail || 'Failed to start Add to MusicData job');
+                }
+                closeAddMusicDataPreviewModal();
+                openMusicDataProgressModal(data.job);
+            } catch (e) {
+                alert(`Failed to start sync: ${e.message || e}`);
+                btn.disabled = false;
+            }
+        }
+
+        function getMdStatusBadgeClass(status) {
+            switch (status) {
+                case 'Added Successfully':
+                    return 'bg-emerald-950 text-emerald-300 border-emerald-700';
+                case 'Partially Failed':
+                    return 'bg-amber-950 text-amber-300 border-amber-700';
+                case 'Failed':
+                    return 'bg-rose-950 text-rose-300 border-rose-700';
+                case 'Skipped (Already Exists)':
+                    return 'bg-slate-800 text-slate-300 border-slate-600';
+                case 'Downloading':
+                case 'Validating':
+                case 'Uploading':
+                    return 'bg-cyan-950 text-cyan-300 border-cyan-700';
+                default:
+                    return 'bg-slate-900 text-amber-300 border-slate-700';
+            }
+        }
+
+        function openMusicDataProgressModal(job) {
+            if (!job) return;
+            mdActiveJobId = job.job_id;
+            const modal = document.getElementById('add-musicdata-progress-modal');
+            modal.classList.remove('hidden');
+            renderMusicDataJobProgress(job);
+            if (mdPollTimer) clearInterval(mdPollTimer);
+            mdPollTimer = setInterval(() => pollMusicDataJob(job.job_id), 1200);
+        }
+
+        function closeAddMusicDataProgressModal() {
+            if (mdPollTimer) {
+                clearInterval(mdPollTimer);
+                mdPollTimer = null;
+            }
+            document.getElementById('add-musicdata-progress-modal').classList.add('hidden');
+        }
+
+        async function pollMusicDataJob(jobId) {
+            try {
+                const res = await fetch(`${API_BASE}/latest-releases/add-to-musicdata/jobs/${encodeURIComponent(jobId)}`);
+                if (!res.ok) return;
+                const data = await parseJsonResponse(res);
+                if (!data.job) return;
+                renderMusicDataJobProgress(data.job);
+                const terminal = ['Added Successfully', 'Partially Failed', 'Failed', 'Skipped (Already Exists)'];
+                if (terminal.includes(data.job.status)) {
+                    if (mdPollTimer) {
+                        clearInterval(mdPollTimer);
+                        mdPollTimer = null;
+                    }
+                    deselectAllNotifications();
+                    loadNotifications();
+                    loadUnreadNotificationCount();
+                    refreshRepoStatus();
+                    loadAlbumsCatalog();
+                }
+            } catch (e) {}
+        }
+
+        function renderMusicDataJobProgress(job) {
+            const prog = job.progress || {};
+            const albums = prog.albums || [];
+            const totalSongs = prog.total_songs || 0;
+            const doneSongs = (prog.songs_added || 0) + (prog.songs_skipped || 0) + (prog.songs_failed || 0);
+            const pct = totalSongs > 0 ? Math.min(100, Math.round((doneSongs / totalSongs) * 100)) : 0;
+
+            document.getElementById('md-progress-job-id').innerText = `Job: ${job.job_id}`;
+            document.getElementById('md-progress-step').innerText = prog.current_step || job.status || 'Waiting';
+            const pill = document.getElementById('md-progress-status-pill');
+            pill.innerText = job.status || 'Waiting';
+            pill.className = `px-2.5 py-1 rounded-full text-[11px] font-bold border ${getMdStatusBadgeClass(job.status)}`;
+
+            document.getElementById('md-progress-counts').innerText = `${prog.songs_added || 0} added • ${prog.songs_skipped || 0} skipped • ${prog.songs_failed || 0} failed`;
+            document.getElementById('md-progress-percent').innerText = `${pct}%`;
+            document.getElementById('md-progress-bar').style.width = `${pct}%`;
+
+            document.getElementById('md-progress-albums').innerHTML = albums.map(alb => {
+                const commitHtml = alb.commit_url
+                    ? `<a href="${escapeHtml(alb.commit_url)}" target="_blank" rel="noopener" class="text-[11px] text-brand-400 hover:text-brand-300 underline font-mono">Commit ${escapeHtml(alb.commit_sha || '')} ↗</a>`
+                    : '';
+                const songRows = (alb.songs || []).map(s => `
+                    <div class="flex items-center justify-between gap-2 text-xs py-1 border-b border-slate-800/50 last:border-0">
+                        <div class="min-w-0">
+                            <p class="text-slate-200 truncate">${escapeHtml(s.song_title)}</p>
+                            ${s.error ? `<p class="text-[10px] text-rose-400 truncate">${escapeHtml(s.error)}</p>` : ''}
+                        </div>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-semibold border shrink-0 ${getMdStatusBadgeClass(s.status)}">${escapeHtml(s.status)}</span>
+                    </div>
+                `).join('');
+                return `
+                    <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                        <div class="flex items-center justify-between gap-2 flex-wrap">
+                            <div>
+                                <p class="font-bold text-sm text-white">${escapeHtml(alb.album_name)} <span class="text-xs font-mono text-slate-400">-> ${escapeHtml(alb.destination_folder)}/</span></p>
+                                ${commitHtml}
+                            </div>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${getMdStatusBadgeClass(alb.status)}">${escapeHtml(alb.status)}</span>
+                        </div>
+                        ${alb.error ? `<p class="text-[11px] text-rose-400">${escapeHtml(alb.error)}</p>` : ''}
+                        <div class="space-y-0.5">${songRows}</div>
+                    </div>
+                `;
+            }).join('');
+
+            const compEl = document.getElementById('md-progress-completion');
+            const retryBtn = document.getElementById('btn-md-retry-failed');
+            if (job.result) {
+                const r = job.result;
+                const linksHtml = (r.commit_links || []).map(cl =>
+                    `<a href="${escapeHtml(cl.commit_url || '#')}" target="_blank" rel="noopener" class="text-brand-400 hover:underline font-mono mr-3">${escapeHtml(cl.album_name)} (${escapeHtml(cl.commit_sha || '')}) ↗</a>`
+                ).join('');
+                compEl.innerHTML = `
+                    <p class="font-bold text-slate-200">Completion Summary</p>
+                    <p class="text-slate-300">Albums processed: <b>${r.albums_processed || 0}</b> • Songs added: <b class="text-emerald-400">${r.songs_added || 0}</b> • Skipped: <b>${r.songs_skipped || 0}</b> • Failed: <b class="text-rose-400">${r.songs_failed || 0}</b></p>
+                    ${r.destination_folders && r.destination_folders.length ? `<p class="text-slate-400">Folders: <code class="text-cyan-300 font-mono">${escapeHtml(r.destination_folders.join(', '))}</code></p>` : ''}
+                    ${linksHtml ? `<p class="text-slate-400">GitHub Commits: ${linksHtml}</p>` : ''}
+                `;
+                compEl.classList.remove('hidden');
+                retryBtn.classList.toggle('hidden', !(r.retry_available));
+            } else {
+                compEl.classList.add('hidden');
+                retryBtn.classList.add('hidden');
+            }
+        }
+
+        async function retryFailedMusicDataSync() {
+            if (!mdActiveJobId) return;
+            const retryBtn = document.getElementById('btn-md-retry-failed');
+            retryBtn.disabled = true;
+            try {
+                const res = await fetch(`${API_BASE}/latest-releases/add-to-musicdata/jobs/${encodeURIComponent(mdActiveJobId)}/retry`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idempotency_key: `retry_${mdActiveJobId}_${Date.now()}` })
+                });
+                const data = await parseJsonResponse(res);
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.error || data.detail || 'Retry failed');
+                }
+                openMusicDataProgressModal(data.job);
+            } catch (e) {
+                alert(`Retry error: ${e.message || e}`);
+            } finally {
+                retryBtn.disabled = false;
             }
         }
     </script>
