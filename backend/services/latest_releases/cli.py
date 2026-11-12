@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import logging
+from backend.services.latest_releases.db import describe_database_url
 from backend.services.latest_releases.discovery import LatestReleasesDiscoveryEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -20,6 +21,13 @@ def main():
         max_pages = int(max_pages_env) if max_pages_env else None
         limit_env = os.environ.get("LATEST_RELEASES_LIMIT_ALBUMS", "").strip()
         limit_albums = int(limit_env) if (limit_env and int(limit_env) > 0) else None
+
+        diag = describe_database_url(os.environ.get("DATABASE_URL"))
+        require_postgres = os.environ.get("REQUIRE_POSTGRES", "").strip().lower() in ("1", "true")
+        logger.info(
+            f"Database environment pre-check: present={diag['present']}, scheme={diag['scheme']!r}, "
+            f"valid_postgres_scheme={diag['valid_postgres_scheme']}, require_postgres={require_postgres}"
+        )
         logger.info(
             f"Executing Latest Releases Discovery Scan (actor={actor}, max_pages={max_pages or 20}, limit_albums={limit_albums})..."
         )

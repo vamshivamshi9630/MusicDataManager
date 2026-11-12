@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import hashlib
@@ -17,6 +18,69 @@ from backend.services.latest_releases.models import (
     ScanRecord
 )
 
+
+def normalize_database_url(raw_url: Optional[str]) -> str:
+    """
+    Normalizes a database connection string cleanly without mutating embedded credentials.
+    Strips surrounding whitespace/quotes, optional 'DATABASE_URL=' prefix, and normalizes
+    PostgreSQL scheme prefixes ('postgres://', 'postgresql+psycopg2://') to 'postgresql://'.
+    """
+    val = (raw_url or "").strip()
+    if not val:
+        return ""
+
+    # Strip accidental matching surrounding quotes
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+        val = val[1:-1].strip()
+
+    # Strip accidental 'DATABASE_URL=' key prefix if user pasted key=value
+    if re.match(r'^DATABASE_URL\s*=', val, re.IGNORECASE):
+        val = re.sub(r'^DATABASE_URL\s*=\s*', '', val, count=1, flags=re.IGNORECASE).strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+            val = val[1:-1].strip()
+
+    m_scheme = re.match(r'^([A-Za-z][A-Za-z0-9+.-]{0,24})://(.*)$', val, re.DOTALL)
+    if m_scheme:
+        scheme_low = m_scheme.group(1).lower()
+        rest = m_scheme.group(2)
+        if scheme_low in ("postgres", "postgresql", "postgresql+psycopg2", "postgresql+psycopg"):
+            return f"postgresql://{rest}"
+        return f"{scheme_low}://{rest}"
+
+    return val
+
+
+def describe_database_url(raw_url: Optional[str]) -> Dict[str, Any]:
+    """
+    Returns non-sensitive diagnostic metadata about DATABASE_URL.
+    NEVER exposes username, password, hostname, port, query params, or full URL.
+    """
+    raw = raw_url or ""
+    cleaned = normalize_database_url(raw)
+    present = bool(cleaned)
+
+    m_scheme = re.match(r'^([A-Za-z][A-Za-z0-9+.-]{0,24})://', cleaned)
+    if not present:
+        scheme = "none"
+    elif m_scheme:
+        scheme = m_scheme.group(1).lower()
+    elif "psql" in cleaned.lower()[:40] or cleaned.lower().startswith("pgpassword="):
+        scheme = "psql_command_detected (invalid URI)"
+    else:
+        scheme = "none (missing :// URI scheme)"
+
+    valid_postgres_scheme = cleaned.startswith("postgresql://") or cleaned.startswith("postgres://")
+    had_wrapping = bool(raw != cleaned and valid_postgres_scheme)
+
+    return {
+        "present": present,
+        "length": len(cleaned),
+        "scheme": scheme,
+        "valid_postgres_scheme": valid_postgres_scheme,
+        "normalized_wrapping": had_wrapping,
+    }
+
+
 class LatestReleasesDB:
     """
     Unified database manager for Latest Releases.
@@ -30,7 +94,8 @@ class LatestReleasesDB:
         require_postgres: Optional[bool] = None
     ):
         env_db_url = os.environ.get("DATABASE_URL", "")
-        self.raw_url = database_url if database_url is not None else (env_db_url or settings.DATABASE_URL or "")
+        raw_input = database_url if database_url is not None else (env_db_url or settings.DATABASE_URL or "")
+        self.raw_url = normalize_database_url(raw_input)
         self.require_postgres = (
             require_postgres if require_postgres is not None
             else os.environ.get("REQUIRE_POSTGRES", "").strip().lower() in ("1", "true")
@@ -38,13 +103,13 @@ class LatestReleasesDB:
         self.is_postgres = self.raw_url.startswith("postgres://") or self.raw_url.startswith("postgresql://")
 
         if self.require_postgres and not self.is_postgres:
-            raise RuntimeError("PostgreSQL is required (REQUIRE_POSTGRES=1), but DATABASE_URL is missing or not a PostgreSQL connection string.")
+            diag = describe_database_url(raw_input)
+            raise RuntimeError(
+                "PostgreSQL is required (REQUIRE_POSTGRES=1), but DATABASE_URL is missing or not a "
+                f"PostgreSQL connection string (present={diag['present']}, scheme={diag['scheme']!r}, length={diag['length']})."
+            )
 
-        # Render provides postgres:// which psycopg2 prefers as postgresql://
-        if self.is_postgres and self.raw_url.startswith("postgres://"):
-            self.pg_url = self.raw_url.replace("postgres://", "postgresql://", 1)
-        else:
-            self.pg_url = self.raw_url
+        self.pg_url = self.raw_url
 
         db_file = sqlite_path or os.environ.get("LATEST_RELEASES_DB_PATH") or settings.LATEST_RELEASES_DB_PATH
         self.sqlite_path = Path(db_file).resolve()

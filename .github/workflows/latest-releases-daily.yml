@@ -49,11 +49,34 @@ jobs:
       - name: Verify required secret configuration
         env:
           HAS_DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ "$HAS_DATABASE_URL" != "true" ]; then
             echo "::error::Missing required repository secret DATABASE_URL. Configure Settings -> Secrets and variables -> Actions -> DATABASE_URL."
             exit 1
           fi
+          python - << 'EOF'
+          import os, sys
+          from backend.services.latest_releases.db import describe_database_url
+
+          diag = describe_database_url(os.environ.get("DATABASE_URL"))
+          req_pg = os.environ.get("REQUIRE_POSTGRES", "")
+          print(
+              f"Secret pre-check: DATABASE_URL present={diag['present']}, length={diag['length']}, "
+              f"scheme={diag['scheme']!r}, valid_postgres_scheme={diag['valid_postgres_scheme']}, "
+              f"normalized_wrapping={diag['normalized_wrapping']}, REQUIRE_POSTGRES={req_pg!r}"
+          )
+          if req_pg not in ("1", "true", "TRUE"):
+              print("::error::REQUIRE_POSTGRES must be enabled (1) for production scheduled scans.")
+              sys.exit(1)
+          if not diag["present"] or not diag["valid_postgres_scheme"]:
+              print(
+                  "::error::DATABASE_URL secret does not contain a valid postgresql:// or postgres:// URI "
+                  f"(detected scheme={diag['scheme']!r}). Paste Render's External Database URL verbatim without "
+                  "extra command text (no psql prefix) or placeholder strings."
+              )
+              sys.exit(1)
+          EOF
 
       - name: Run Latest Releases Discovery Engine CLI
         env:

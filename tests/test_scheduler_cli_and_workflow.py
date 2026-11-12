@@ -150,3 +150,78 @@ class TestSchedulerCLIAndWorkflow:
         assert first is True
         assert second is False
         assert db.get_unread_count() == 1
+
+    def test_database_url_normalization_validation_and_safe_diagnostics(self, caplog, tmp_path):
+        from backend.services.latest_releases.db import normalize_database_url, describe_database_url
+
+        # Normalizes wrapping whitespace, quotes, accidental key prefix, and psycopg2 scheme cleanly
+        assert normalize_database_url('  "postgres://u:p@h.render.com/db"  ') == "postgresql://u:p@h.render.com/db"
+        assert normalize_database_url("DATABASE_URL='postgresql+psycopg2://u:p@h.render.com/db'") == "postgresql://u:p@h.render.com/db"
+        assert normalize_database_url("POSTGRESQL://u:p@h.render.com/db") == "postgresql://u:p@h.render.com/db"
+
+        # Safe diagnostics never expose credentials, host, or database name
+        secret_sample = "postgresql://secret_user_123:super_secret_pw_999@dpg-secret-host.oregon-postgres.render.com/musicdata_prod"
+        diag_ok = describe_database_url(f'  "{secret_sample}"  ')
+        assert diag_ok["present"] is True
+        assert diag_ok["scheme"] == "postgresql"
+        assert diag_ok["valid_postgres_scheme"] is True
+        assert diag_ok["normalized_wrapping"] is True
+        for forbidden in ("secret_user_123", "super_secret_pw_999", "dpg-secret-host", "musicdata_prod"):
+            assert forbidden not in str(diag_ok)
+
+        # Detects psql command strings safely without leaking PGPASSWORD
+        psql_cmd = "PGPASSWORD=leaked_secret_pw psql -h host.render.com -U user db"
+        diag_psql = describe_database_url(psql_cmd)
+        assert diag_psql["present"] is True
+        assert diag_psql["valid_postgres_scheme"] is False
+        assert "psql" in diag_psql["scheme"]
+        assert "leaked_secret_pw" not in str(diag_psql)
+
+        # Missing / invalid URI error message remains descriptive yet secret-free under REQUIRE_POSTGRES=1
+        with pytest.raises(RuntimeError) as exc_info:
+            LatestReleasesDB(
+                database_url="sqlite:///secret_local_path.db",
+                sqlite_path=str(tmp_path / "unused.db"),
+                require_postgres=True,
+            )
+        err_msg = str(exc_info.value)
+        assert "PostgreSQL is required (REQUIRE_POSTGRES=1)" in err_msg
+        assert "scheme='sqlite'" in err_msg
+        assert "secret_local_path" not in err_msg
+
+        # CLI logs safe pre-execution diagnostics and never exposes credentials
+        from backend.services.latest_releases import cli
+        with patch.dict("os.environ", {"DATABASE_URL": secret_sample, "REQUIRE_POSTGRES": "1"}, clear=False), \
+             patch("backend.services.latest_releases.cli.LatestReleasesDiscoveryEngine") as mock_cls, \
+             patch("sys.argv", ["cli.py", "scan"]):
+            mock_inst = MagicMock()
+            mock_inst.run_scan.return_value = {"success": True, "status": "COMPLETED"}
+            mock_cls.return_value = mock_inst
+            with caplog.at_level("INFO"):
+                with pytest.raises(SystemExit) as sys_exit:
+                    cli.main()
+                assert sys_exit.value.code == 0
+
+        joined_logs = "\n".join(caplog.messages)
+        assert "Database environment pre-check:" in joined_logs
+        assert "present=True, scheme='postgresql', valid_postgres_scheme=True, require_postgres=True" in joined_logs
+        for forbidden in ("secret_user_123", "super_secret_pw_999", "dpg-secret-host", "musicdata_prod"):
+            assert forbidden not in joined_logs
+
+    def test_workflow_maps_secret_without_empty_overwrite(self):
+        import yaml
+
+        wf_path = REPO_ROOT / ".github" / "workflows" / "latest-releases-daily.yml"
+        wf = yaml.safe_load(wf_path.read_text(encoding="utf-8"))
+        job = wf["jobs"]["discovery-scan"]
+        assert "DATABASE_URL" not in job.get("env", {}) or job["env"]["DATABASE_URL"] != ""
+
+        verify_step = next(s for s in job["steps"] if s.get("name") == "Verify required secret configuration")
+        cli_step = next(s for s in job["steps"] if s.get("name") == "Run Latest Releases Discovery Engine CLI")
+        assert verify_step["env"]["DATABASE_URL"] == "${{ secrets.DATABASE_URL }}"
+        assert cli_step["env"]["DATABASE_URL"] == "${{ secrets.DATABASE_URL }}"
+        assert "describe_database_url" in verify_step["run"]
+        for step in job["steps"]:
+            step_env = step.get("env") or {}
+            if "DATABASE_URL" in step_env:
+                assert str(step_env["DATABASE_URL"]).strip() != ""
