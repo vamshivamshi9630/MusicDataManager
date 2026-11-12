@@ -11,7 +11,12 @@ from backend.services.latest_releases.models import (
     DiscoveredSong,
     NotificationResolutionStatus
 )
-from backend.services.latest_releases.db import get_latest_releases_db, LatestReleasesDB
+from backend.services.latest_releases.db import (
+    get_latest_releases_db,
+    LatestReleasesDB,
+    compute_canonical_album_key,
+    song_identity_key,
+)
 from backend.services.latest_releases.source_client import SourceClient
 from backend.services.latest_releases.album_parser import AlbumParser
 from backend.services.catalog import CatalogLookupError
@@ -58,6 +63,119 @@ class LatestReleasesDiscoveryEngine:
             return cand, discovered, None
         except Exception as err:
             return cand, None, err
+
+    @staticmethod
+    def _consolidate_discovered_albums(
+        parsed_entries: List[Tuple[Dict[str, Any], Optional[DiscoveredAlbum], Optional[Exception]]]
+    ) -> List[Tuple[Dict[str, Any], Optional[DiscoveredAlbum], Optional[Exception]]]:
+        """
+        Consolidates multiple NaaSongs posts belonging to the same canonical `(clean_album, language)`
+        before comparison/persistence (e.g., an album post on page 1 and a standalone song post on page 4).
+        Preserves earliest `(source_page, source_position)`, richest album metadata, and version-aware
+        deduplicated tracks.
+        """
+        consolidated: List[Tuple[Dict[str, Any], Optional[DiscoveredAlbum], Optional[Exception]]] = []
+        by_canon_idx: Dict[str, int] = {}
+        song_idx_by_canon: Dict[str, Dict[Tuple[str, Tuple[str, ...]], DiscoveredSong]] = {}
+        merged_count = 0
+
+        for cand, discovered, fetch_err in parsed_entries:
+            if fetch_err is not None or not discovered:
+                consolidated.append((cand, discovered, fetch_err))
+                continue
+
+            canon_key, clean_display, norm_lang = compute_canonical_album_key(
+                discovered.album_name, discovered.language
+            )
+            discovered.language = norm_lang
+            if clean_display:
+                discovered.album_name = clean_display
+
+            if canon_key not in by_canon_idx:
+                song_map: Dict[Tuple[str, Tuple[str, ...]], DiscoveredSong] = {}
+                deduped_songs: List[DiscoveredSong] = []
+                for s in discovered.songs:
+                    s_key = song_identity_key(s.song_title)
+                    if not s_key[0]:
+                        s_key = ((s.song_title or "").strip().lower(), ())
+                    if s_key in song_map:
+                        LatestReleasesDiscoveryEngine._merge_discovered_song(song_map[s_key], s)
+                    else:
+                        song_map[s_key] = s
+                        s.track_number = len(deduped_songs) + 1
+                        deduped_songs.append(s)
+                discovered.songs = deduped_songs
+                song_idx_by_canon[canon_key] = song_map
+                by_canon_idx[canon_key] = len(consolidated)
+                cand_copy = dict(cand)
+                cand_copy["_merged_raw_count"] = 1
+                consolidated.append((cand_copy, discovered, None))
+            else:
+                merged_count += 1
+                primary_cand, primary, _ = consolidated[by_canon_idx[canon_key]]
+                assert primary is not None
+                primary_cand["_merged_raw_count"] = primary_cand.get("_merged_raw_count", 1) + 1
+
+                # Keep earliest (source_page, source_position)
+                inc_page = discovered.source_page
+                inc_pos = discovered.source_position
+                pri_page = primary.source_page
+                pri_pos = primary.source_position
+                if inc_page is not None and (
+                    pri_page is None
+                    or (inc_page, inc_pos if inc_pos is not None else 999999)
+                    < (pri_page, pri_pos if pri_pos is not None else 999999)
+                ):
+                    primary.source_page = inc_page
+                    primary.source_position = inc_pos
+                    primary_cand["source_page"] = inc_page
+                    primary_cand["source_position"] = inc_pos
+
+                if (not primary.music_director or primary.music_director == "Unknown") and discovered.music_director and discovered.music_director != "Unknown":
+                    primary.music_director = discovered.music_director
+                if not primary.artwork_url and discovered.artwork_url:
+                    primary.artwork_url = discovered.artwork_url
+                if not primary.year and discovered.year:
+                    primary.year = discovered.year
+
+                song_map = song_idx_by_canon[canon_key]
+                for s in discovered.songs:
+                    s_key = song_identity_key(s.song_title)
+                    if not s_key[0]:
+                        s_key = ((s.song_title or "").strip().lower(), ())
+                    if s_key in song_map:
+                        LatestReleasesDiscoveryEngine._merge_discovered_song(song_map[s_key], s)
+                    else:
+                        s.track_number = len(primary.songs) + 1
+                        song_map[s_key] = s
+                        primary.songs.append(s)
+
+        if merged_count > 0:
+            logger.info(
+                f"[DISCOVERY] Consolidated {merged_count} duplicate album post(s) into "
+                f"{len(by_canon_idx)} unique canonical album entry/entries."
+            )
+        return consolidated
+
+    @staticmethod
+    def _merge_discovered_song(target: DiscoveredSong, incoming: DiscoveredSong) -> None:
+        if incoming.singer and (not target.singer or target.singer == "Unknown"):
+            target.singer = incoming.singer
+        if incoming.available_bitrate and not target.available_bitrate:
+            target.available_bitrate = incoming.available_bitrate
+        if incoming.source_page_url and not getattr(target, "source_page_url", None):
+            target.source_page_url = incoming.source_page_url
+        if incoming.download_links:
+            merged_links = dict(target.download_links or {})
+            merged_links.update({k: v for k, v in incoming.download_links.items() if v})
+            target.download_links = merged_links
+            target.available_bitrates = sorted(
+                set(list(target.available_bitrates or []) + list(incoming.available_bitrates or []) + list(merged_links.keys()))
+            )
+        if incoming.source_audio_url and (not target.source_audio_url or ("320" in incoming.source_audio_url and "320" not in target.source_audio_url)):
+            target.source_audio_url = incoming.source_audio_url
+        target.link_available = bool(target.link_available or incoming.link_available or target.source_audio_url)
+        target.download_authorized = bool(target.download_authorized or incoming.download_authorized)
 
     def run_scan(self, locked_by: str = "cron", max_pages: Optional[int] = None, limit_albums: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -226,6 +344,8 @@ class LatestReleasesDiscoveryEngine:
             else:
                 parsed_entries = [self._fetch_and_parse_album(cand) for cand in all_candidates]
 
+            parsed_entries = self._consolidate_discovered_albums(parsed_entries)
+
             for cand, discovered, fetch_err in parsed_entries:
                 album_url = cand.get("url")
                 if fetch_err is not None:
@@ -238,7 +358,7 @@ class LatestReleasesDiscoveryEngine:
                 try:
                     # Run comparison against MusicData catalog (incorporates album language)
                     notif_type, analyzed = comparator.compare_album(discovered)
-                    albums_inspected += 1
+                    albums_inspected += cand.get("_merged_raw_count", 1)
 
                     # Save album and songs in DB
                     album_id = self.db.upsert_discovered_album(analyzed)

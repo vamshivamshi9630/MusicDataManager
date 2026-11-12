@@ -42,6 +42,47 @@ class CloudCatalogService:
         "Bengali", "Marathi", "Punjabi", "English"
     ]
 
+    LANGUAGE_TYPO_MAP = {
+        "taelugu": "Telugu",
+        "teulugu": "Telugu",
+        "teugu": "Telugu",
+        "telgu": "Telugu",
+        "telagu": "Telugu",
+        "tamill": "Tamil",
+        "thamil": "Tamil",
+        "hindhi": "Hindi",
+        "hinde": "Hindi",
+        "kanada": "Kannada",
+        "kannadda": "Kannada",
+        "malayalm": "Malayalam",
+        "malyalam": "Malayalam",
+    }
+
+    @classmethod
+    def normalize_language_name(cls, language: Optional[str]) -> Optional[str]:
+        """Normalizes language labels and heals common source typos (e.g. Taelugu -> Telugu)."""
+        if not language or not str(language).strip():
+            return None
+        cleaned = re.sub(r"\s+", " ", str(language)).strip()
+        low = cleaned.lower()
+        if low in ("unknown", "all", "-", "n/a"):
+            return cleaned.title() if low == "unknown" else None
+        if low in cls.LANGUAGE_TYPO_MAP:
+            return cls.LANGUAGE_TYPO_MAP[low]
+        for lang in cls.KNOWN_LANGUAGES:
+            if lang.lower() == low:
+                return lang
+        best_lang = None
+        best_score = 0.0
+        for lang in cls.KNOWN_LANGUAGES:
+            score = SequenceMatcher(None, low, lang.lower()).ratio()
+            if score > best_score:
+                best_score = score
+                best_lang = lang
+        if best_lang and best_score >= 0.85:
+            return best_lang
+        return cleaned.title()
+
     def __init__(self, owner: Optional[str] = None, repo: Optional[str] = None, branch: Optional[str] = None):
         self._owner_override = owner
         self._repo_override = repo
@@ -388,7 +429,7 @@ class CloudCatalogService:
             return None
 
         clean_query, emb_query_lang = self.strip_language_and_meta(query_name)
-        effective_query_lang = query_language or emb_query_lang
+        effective_query_lang = self.normalize_language_name(query_language or emb_query_lang)
 
         norm_query_raw = re.sub(r'[^a-z0-9]', '', query_name.lower())
         norm_query_clean = re.sub(r'[^a-z0-9]', '', clean_query.lower())
@@ -397,12 +438,12 @@ class CloudCatalogService:
             """Strict language compatibility check."""
             _, cat_emb_lang = self.strip_language_and_meta(cat_album.get("name", ""))
             # Explicit title language always takes precedence over default catalog index language
-            effective_cat_lang = cat_emb_lang or cat_album.get("language")
-            if cat_emb_lang and effective_query_lang and cat_emb_lang.lower() != effective_query_lang.lower():
+            effective_cat_lang = self.normalize_language_name(cat_emb_lang or cat_album.get("language"))
+            if cat_emb_lang and effective_query_lang and self.normalize_language_name(cat_emb_lang).lower() != effective_query_lang.lower():
                 return False
             if not effective_query_lang or not effective_cat_lang:
                 return True
-            return str(effective_cat_lang).strip().lower() == str(effective_query_lang).strip().lower()
+            return effective_cat_lang.lower() == effective_query_lang.lower()
 
         def years_compatible(cat_album: Dict[str, Any]) -> bool:
             if not query_year:
@@ -443,19 +484,17 @@ class CloudCatalogService:
                     candidates.append(alb)
 
         if len(candidates) == 1:
-            if years_compatible(candidates[0]):
-                return candidates[0]
+            return candidates[0]
         elif len(candidates) > 1:
-            # Ambiguous match (e.g. OM in multiple languages and query language was missing/generic)
-            # Require exact language match
+            # Disambiguate multiple candidates using year fit & explicit language priority
             filtered = [c for c in candidates if years_compatible(c)]
             if not filtered:
                 filtered = candidates
             if effective_query_lang:
                 for c in filtered:
                     c_clean, c_emb = self.strip_language_and_meta(c.get("name", ""))
-                    c_l = c.get("language") or c_emb
-                    if c_l and str(c_l).strip().lower() == str(effective_query_lang).strip().lower():
+                    c_l = self.normalize_language_name(c_emb or c.get("language"))
+                    if c_l and c_l.lower() == effective_query_lang.lower():
                         return c
             # Multiple candidates with unresolved language -> Return None to prevent incorrect merge
             return None
@@ -529,10 +568,10 @@ class CloudCatalogService:
         Extracts canonical base core title and explicit version qualifiers (e.g. promo, full, female).
         """
         raw = (title or "").strip()
-        raw_alnum = re.sub(r'[^a-z0-9]', '', re.sub(r'\.mp3$', '', raw, flags=re.IGNORECASE).lower())
+        raw_no_ext = re.sub(r'(?:\.mp3|\.mp|\s+mp)$', '', raw, flags=re.IGNORECASE).strip()
+        raw_alnum = re.sub(r'[^a-z0-9]', '', raw_no_ext.lower())
 
-        t = raw.lower()
-        t = re.sub(r'\.mp3$', '', t, flags=re.IGNORECASE)
+        t = raw_no_ext.lower()
         t = re.sub(r'^\s*0*\d+\s*[\-_.]\s*', '', t)
 
         versions: List[str] = []

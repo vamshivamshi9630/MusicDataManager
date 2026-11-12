@@ -22,7 +22,13 @@ from backend.services.fuzzy_search import normalize_text
 from backend.services.generator import GeneratorService
 from backend.services.git_sync import BaseGitSyncService, GitSyncError
 from backend.services.latest_releases.album_parser import AlbumParser
-from backend.services.latest_releases.db import LatestReleasesDB, get_latest_releases_db
+from backend.services.latest_releases.db import (
+    LatestReleasesDB,
+    get_latest_releases_db,
+    compute_canonical_album_key,
+    song_identity_key,
+    build_notification_summary_text,
+)
 from backend.services.latest_releases.models import (
     MatchConfidence,
     NotificationResolutionStatus,
@@ -741,9 +747,10 @@ def selective_reconcile_notification(
     verified_added_filenames: List[str],
 ) -> Dict[str, Any]:
     """
-    Marks ONLY successfully uploaded and verified songs as resolved (`exists_in_catalog=True`).
-    Preserves failed, unverified, or unselected missing songs as pending and never falsely resolves
-    an entire album notification when songs remain missing.
+    Marks ONLY successfully uploaded and verified songs as resolved (`exists_in_catalog=True`),
+    upgrades stale NEW_ALBUM types to NEW_SONG/MISSING_SONGS when remaining tracks exist,
+    auto-completes when 0 missing remain, and reconciles duplicate active sibling notifications
+    for the same canonical `(album, language)` identity.
     """
     notif = db.get_notification_by_id(notification_id)
     if not notif:
@@ -752,12 +759,18 @@ def selective_reconcile_notification(
     songs = list(notif.get("songs") or [])
     verified_key_set = set(verified_added_song_keys or [])
     verified_file_set = {f.lower() for f in (verified_added_filenames or [])}
+    canon_key, clean_display, norm_lang = compute_canonical_album_key(
+        notif.get("album_name"), notif.get("language")
+    )
 
     updated_count = 0
+    verified_identities = set()
     for idx, song in enumerate(songs):
-        if song.get("exists_in_catalog"):
-            continue
         title = str(song.get("song_title") or "").strip()
+        if song.get("exists_in_catalog"):
+            if title:
+                verified_identities.add(song_identity_key(title))
+            continue
         track_num = int(song.get("track_number") or (idx + 1))
         s_key = compute_song_key(notification_id, track_num, title)
         try:
@@ -774,6 +787,8 @@ def selective_reconcile_notification(
             song["match_reason"] = "Added directly to MusicData and verified"
             song["tracking_status"] = TrackingStatus.ADDED_TO_MUSICDATA.value
             updated_count += 1
+            if title:
+                verified_identities.add(song_identity_key(title))
             if song.get("id"):
                 try:
                     db.update_song_tracking_status(int(song["id"]), TrackingStatus.ADDED_TO_MUSICDATA)
@@ -788,20 +803,138 @@ def selective_reconcile_notification(
     else:
         new_status = notif.get("resolution_status") or NotificationResolutionStatus.PENDING.value
 
+    orig_type_str = notif.get("notification_type") or NotificationType.MISSING_SONGS.value
+    if remaining_missing == 1:
+        eff_type = NotificationType.NEW_SONG
+    elif remaining_missing > 1 and (updated_count > 0 or any(s.get("exists_in_catalog") for s in songs)):
+        eff_type = NotificationType.MISSING_SONGS
+    else:
+        try:
+            eff_type = NotificationType(orig_type_str)
+        except Exception:
+            eff_type = NotificationType.MISSING_SONGS
+
+    new_title, new_message = build_notification_summary_text(
+        eff_type,
+        clean_display,
+        norm_lang,
+        songs,
+        music_director=notif.get("music_director") or "Unknown",
+        year=notif.get("year") or 2026,
+    )
+
     db.update_notification_resolution(
         notification_id=notification_id,
         status=new_status,
         updated_songs=songs,
         missing_count=remaining_missing,
+        notification_type=eff_type.value if (updated_count > 0 or remaining_missing > 0 and any(s.get("exists_in_catalog") for s in songs)) else None,
+        title=new_title if (updated_count > 0 or remaining_missing == 0 or any(s.get("exists_in_catalog") for s in songs)) else None,
+        message=new_message if (updated_count > 0 or remaining_missing == 0 or any(s.get("exists_in_catalog") for s in songs)) else None,
+        language=norm_lang,
+        canonical_album_key=canon_key,
+        is_read=True if new_status == NotificationResolutionStatus.COMPLETED.value else None,
     )
     if new_status == NotificationResolutionStatus.COMPLETED.value:
         db.mark_notification_read(notification_id)
+
+    # Reconcile any duplicate active notifications referencing the same canonical album & songs
+    sibling_reconciled = 0
+    if updated_count > 0 or verified_file_set:
+        primary_missing_identities = {
+            song_identity_key(s.get("song_title"))
+            for s in songs
+            if not s.get("exists_in_catalog") and s.get("song_title")
+        }
+        try:
+            active_siblings = db.get_active_notifications(limit=200)
+        except Exception:
+            active_siblings = []
+
+        for sib in active_siblings:
+            sib_id = sib.get("id")
+            if not sib_id or sib_id == notification_id:
+                continue
+            sib_key, sib_display, sib_lang = compute_canonical_album_key(
+                sib.get("album_name"), sib.get("language")
+            )
+            if sib_key != canon_key:
+                continue
+
+            sib_songs = list(sib.get("songs") or [])
+            sib_updated = 0
+            for s in sib_songs:
+                if s.get("exists_in_catalog"):
+                    continue
+                s_title = str(s.get("song_title") or "").strip()
+                try:
+                    t_file = sanitize_song_filename(s_title).lower()
+                except PathTraversalError:
+                    t_file = ""
+                if (t_file and t_file in verified_file_set) or (
+                    s_title and song_identity_key(s_title) in verified_identities
+                ):
+                    s["exists_in_catalog"] = True
+                    s["catalog_song_title"] = s_title
+                    s["match_confidence"] = MatchConfidence.EXACT.value
+                    s["match_classification"] = "EXACT_MATCH"
+                    s["match_score"] = 1.0
+                    s["match_reason"] = "Added directly to MusicData and verified"
+                    s["tracking_status"] = TrackingStatus.ADDED_TO_MUSICDATA.value
+                    sib_updated += 1
+
+            sib_missing = [s for s in sib_songs if not s.get("exists_in_catalog")]
+            sib_missing_ids = {
+                song_identity_key(s.get("song_title"))
+                for s in sib_missing
+                if s.get("song_title")
+            }
+            all_sib_missing_covered_by_primary = (
+                new_status != NotificationResolutionStatus.COMPLETED.value
+                and bool(sib_missing_ids)
+                and sib_missing_ids.issubset(primary_missing_identities)
+            )
+            if (len(sib_missing) == 0 and len(sib_songs) > 0) or all_sib_missing_covered_by_primary:
+                db.update_notification_resolution(
+                    notification_id=sib_id,
+                    status=NotificationResolutionStatus.COMPLETED.value,
+                    updated_songs=sib_songs,
+                    missing_count=0,
+                    language=sib_lang,
+                    canonical_album_key=canon_key,
+                    is_read=True,
+                )
+                db.mark_notification_read(sib_id)
+                sibling_reconciled += 1
+            elif sib_updated > 0:
+                sib_eff_type = NotificationType.NEW_SONG if len(sib_missing) <= 1 else NotificationType.MISSING_SONGS
+                sib_title, sib_msg = build_notification_summary_text(
+                    sib_eff_type,
+                    sib_display,
+                    sib_lang,
+                    sib_songs,
+                    music_director=sib.get("music_director") or "Unknown",
+                    year=sib.get("year") or 2026,
+                )
+                db.update_notification_resolution(
+                    notification_id=sib_id,
+                    status=NotificationResolutionStatus.PARTIALLY_COMPLETED.value,
+                    updated_songs=sib_songs,
+                    missing_count=len(sib_missing),
+                    notification_type=sib_eff_type.value,
+                    title=sib_title,
+                    message=sib_msg,
+                    language=sib_lang,
+                    canonical_album_key=canon_key,
+                )
+                sibling_reconciled += 1
 
     return {
         "updated": True,
         "resolved_songs_count": updated_count,
         "remaining_missing_count": remaining_missing,
         "resolution_status": new_status,
+        "sibling_reconciled_count": sibling_reconciled,
     }
 
 

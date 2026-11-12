@@ -81,6 +81,206 @@ def describe_database_url(raw_url: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def compute_canonical_album_key(
+    album_name: Optional[str],
+    language: Optional[str] = "Telugu",
+) -> Tuple[str, str, str]:
+    """
+    Computes a language-scoped canonical identity key for an album:
+    Returns `(canonical_key, clean_album_display, normalized_language)`.
+    Example: ('Adhurs - Telugu', 'Taelugu') -> ('adhurs::telugu', 'Adhurs', 'Telugu')
+    """
+    from backend.services.catalog import CloudCatalogService
+
+    raw_name = (album_name or "").strip()
+    clean_display, emb_lang = CloudCatalogService.strip_language_and_meta(raw_name)
+    display_name = clean_display or raw_name
+    norm_lang = CloudCatalogService.normalize_language_name(language or emb_lang) or "Telugu"
+    norm_album = re.sub(r'[^a-z0-9]', '', display_name.lower())
+    if not norm_album:
+        norm_album = re.sub(r'[^a-z0-9]', '', raw_name.lower()) or "unknown"
+    return f"{norm_album}::{norm_lang.lower()}", display_name, norm_lang
+
+
+def song_identity_key(song_title: Optional[str]) -> Tuple[str, Tuple[str, ...]]:
+    """
+    Returns canonical version-aware song key `(base_core, version_tags)` so formatting
+    differences collapse while genuinely distinct versions (Promo vs Full) remain separate.
+    """
+    from backend.services.catalog import CloudCatalogService
+
+    comp = CloudCatalogService.parse_song_title_components(song_title or "")
+    base = comp.get("base_core") or comp.get("raw_alnum") or ""
+    return (base, tuple(comp.get("version_tags") or ()))
+
+
+def _merge_single_song_dict(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Merges two song dicts representing the same canonical song identity."""
+    merged = dict(existing)
+
+    # Prefer cleaner/longer display title without weird file artifacts if available
+    inc_title = (incoming.get("song_title") or "").strip()
+    ext_title = (existing.get("song_title") or "").strip()
+    if inc_title and (not ext_title or len(inc_title) > len(ext_title)):
+        merged["song_title"] = inc_title
+
+    # Never downgrade catalog verification once verified in MusicData
+    ext_exists = bool(existing.get("exists_in_catalog"))
+    inc_exists = bool(incoming.get("exists_in_catalog"))
+    merged["exists_in_catalog"] = ext_exists or inc_exists
+
+    if inc_exists and not ext_exists:
+        for k in (
+            "match_confidence",
+            "match_classification",
+            "match_score",
+            "match_reason",
+            "catalog_song_title",
+            "catalog_song_id",
+            "catalog_album_name",
+            "tracking_status",
+        ):
+            if incoming.get(k) is not None:
+                merged[k] = incoming[k]
+    elif ext_exists:
+        # Keep catalog match fields from existing verified entry; fill any blanks from incoming
+        for k in (
+            "match_confidence",
+            "match_classification",
+            "match_score",
+            "match_reason",
+            "catalog_song_title",
+            "catalog_song_id",
+            "catalog_album_name",
+            "tracking_status",
+        ):
+            if not merged.get(k) and incoming.get(k) is not None:
+                merged[k] = incoming[k]
+    else:
+        # Both not in catalog: preserve version/uncertain diagnostics if incoming has richer detail
+        inc_cls = str(incoming.get("match_classification") or "")
+        ext_cls = str(existing.get("match_classification") or "")
+        if inc_cls == "POSSIBLE_VERSION_MATCH" or (not ext_cls and inc_cls):
+            for k in (
+                "match_confidence",
+                "match_classification",
+                "match_score",
+                "match_reason",
+                "catalog_version_candidates",
+                "tracking_status",
+            ):
+                if incoming.get(k) is not None:
+                    merged[k] = incoming[k]
+
+    # Merge singer, URL, and bitrate/download links
+    if incoming.get("singer") and (not merged.get("singer") or str(merged.get("singer")).lower() == "unknown"):
+        merged["singer"] = incoming["singer"]
+    if incoming.get("source_audio_url") and not merged.get("source_audio_url"):
+        merged["source_audio_url"] = incoming["source_audio_url"]
+    if incoming.get("source_page_url") and not merged.get("source_page_url"):
+        merged["source_page_url"] = incoming["source_page_url"]
+    if incoming.get("available_bitrate") and not merged.get("available_bitrate"):
+        merged["available_bitrate"] = incoming["available_bitrate"]
+
+    ext_links = dict(existing.get("download_links") or {})
+    inc_links = dict(incoming.get("download_links") or {})
+    if inc_links:
+        ext_links.update({k: v for k, v in inc_links.items() if v})
+    if ext_links:
+        merged["download_links"] = ext_links
+        merged["available_bitrates"] = sorted(
+            set(list(existing.get("available_bitrates") or []) + list(incoming.get("available_bitrates") or []) + list(ext_links.keys()))
+        )
+
+    merged["link_available"] = bool(existing.get("link_available") or incoming.get("link_available") or merged.get("source_audio_url"))
+    merged["download_authorized"] = bool(existing.get("download_authorized") or incoming.get("download_authorized"))
+    return merged
+
+
+def deduplicate_and_merge_song_dicts(
+    existing_songs: Optional[List[Dict[str, Any]]],
+    incoming_songs: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """
+    Deduplicates and merges song payload lists by version-aware canonical song identity,
+    preserving distinct versions (e.g. Promo vs Full) while collapsing identical tracks.
+    """
+    ordered_keys: List[Tuple[str, Tuple[str, ...]]] = []
+    by_key: Dict[Tuple[str, Tuple[str, ...]], Dict[str, Any]] = {}
+
+    for item in (existing_songs or []) + (incoming_songs or []):
+        if not isinstance(item, dict):
+            continue
+        title = item.get("song_title") or ""
+        if not title:
+            continue
+        key = song_identity_key(title)
+        if not key[0]:
+            key = (title.strip().lower(), ())
+        if key in by_key:
+            by_key[key] = _merge_single_song_dict(by_key[key], item)
+        else:
+            ordered_keys.append(key)
+            by_key[key] = dict(item)
+
+    return [by_key[k] for k in ordered_keys]
+
+
+def build_notification_summary_text(
+    notification_type: NotificationType,
+    album_name: str,
+    language: str,
+    songs_list: List[Dict[str, Any]],
+    music_director: str = "Unknown",
+    year: int = 2026,
+) -> Tuple[str, str]:
+    """Builds consistent notification title and message from current missing/version state."""
+    lang_badge = f"[{language}] " if language else ""
+    missing_songs = [s for s in songs_list if not s.get("exists_in_catalog")]
+    version_verify_songs = [
+        s for s in missing_songs
+        if str(s.get("match_classification") or "") == "POSSIBLE_VERSION_MATCH"
+        or str(s.get("match_confidence") or "") == MatchConfidence.UNCERTAIN.value
+    ]
+    genuine_missing_songs = [s for s in missing_songs if s not in version_verify_songs]
+
+    if notification_type == NotificationType.NEW_ALBUM:
+        title = f"New Album: {album_name}"
+        message = f"{lang_badge}{len(songs_list)} songs available • Music by {music_director} ({year})"
+        return title, message
+
+    if notification_type == NotificationType.NEW_SONG:
+        missing_title = (missing_songs[0].get("song_title") if missing_songs else None) or "New Track"
+        title = f"New Song: {album_name}"
+        if version_verify_songs:
+            message = f"{lang_badge}'{missing_title}' needs version verification against MusicData"
+        else:
+            message = f"{lang_badge}'{missing_title}' released • Missing from MusicData"
+        return title, message
+
+    if notification_type == NotificationType.MISSING_SONGS:
+        title = f"Missing Songs: {album_name}"
+        missing_count = len(missing_songs)
+        if version_verify_songs and genuine_missing_songs:
+            names_snippet = ", ".join([s.get("song_title", "") for s in genuine_missing_songs[:2]])
+            if len(genuine_missing_songs) > 2:
+                names_snippet += f" and {len(genuine_missing_songs) - 2} more"
+            message = f"{lang_badge}{len(genuine_missing_songs)} missing ({names_snippet}) • {len(version_verify_songs)} version match to verify"
+        elif version_verify_songs and not genuine_missing_songs:
+            message = f"{lang_badge}{len(version_verify_songs)} track(s) need version verification"
+        else:
+            names_snippet = ", ".join([s.get("song_title", "") for s in missing_songs[:2]])
+            if len(missing_songs) > 2:
+                names_snippet += f" and {len(missing_songs) - 2} more"
+            message = f"{lang_badge}{missing_count} songs missing ({names_snippet})"
+        return title, message
+
+    if notification_type == NotificationType.ALBUM_UPDATED:
+        return f"Album Updated: {album_name}", f"{lang_badge}New artwork or updated tracklist discovered."
+
+    return f"Catalog Update: {album_name}", "New details discovered."
+
+
 class LatestReleasesDB:
     """
     Unified database manager for Latest Releases.
@@ -246,7 +446,8 @@ class LatestReleasesDB:
                     created_at DOUBLE PRECISION NOT NULL,
                     updated_at DOUBLE PRECISION NOT NULL,
                     details_json TEXT,
-                    dedup_hash TEXT UNIQUE
+                    dedup_hash TEXT UNIQUE,
+                    canonical_album_key VARCHAR(255)
                 );
             """)
 
@@ -299,6 +500,7 @@ class LatestReleasesDB:
             ("notifications", "resolution_status", "VARCHAR(32) DEFAULT 'PENDING'"),
             ("notifications", "source_page", "INT"),
             ("notifications", "source_position", "INT"),
+            ("notifications", "canonical_album_key", "VARCHAR(255)"),
             ("discovery_scans", "pages_checked", "INT DEFAULT 1"),
             ("discovery_scans", "pages_requested", "INT"),
             ("discovery_scans", "pages_successfully_checked", "INT"),
@@ -803,47 +1005,241 @@ class LatestReleasesDB:
         source_position: Optional[int] = None
     ) -> bool:
         """
-        Creates a notification. If an identical notification hash exists, updates timestamp and source order
-        without creating duplicates or overwriting existing read/unread status.
-        Returns True if a new notification was inserted, False if deduplicated.
+        Creates a notification.
+        - Normalizes album language and canonical `(clean_album, language)` key.
+        - Deduplicates identical hashes and preserves COMPLETED status without resurrecting resolved rows.
+        - Consolidates any active duplicate notifications sharing the same canonical `(album, language)`
+          identity into a single active row, preserving earliest chronological position and read state.
+        Returns True if a new notification was inserted, False if deduplicated/consolidated.
         """
         now = time.time()
-        # Compute deduplication hash based on album, language, notification type, and list of missing song titles
-        missing_titles = sorted([s.get("song_title", "") for s in songs_list if not s.get("exists_in_catalog")])
-        hash_input = f"{album_name}:{language}:{notification_type.value}:{','.join(missing_titles)}"
+        ph = "%s" if self.is_postgres else "?"
+        canonical_key, clean_display_name, norm_lang = compute_canonical_album_key(album_name, language)
+        clean_songs = deduplicate_and_merge_song_dicts([], songs_list)
+
+        missing_titles = sorted([s.get("song_title", "") for s in clean_songs if not s.get("exists_in_catalog")])
+        hash_input = f"{clean_display_name}:{norm_lang}:{notification_type.value}:{','.join(missing_titles)}"
         dedup_hash = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()
-        details_json = json.dumps(songs_list)
+        # Backward-compatible legacy hash check so pre-migration rows also dedup cleanly
+        legacy_hash_input = f"{album_name}:{language}:{notification_type.value}:{','.join(missing_titles)}"
+        legacy_dedup_hash = hashlib.sha256(legacy_hash_input.encode("utf-8")).hexdigest()
+        details_json = json.dumps(clean_songs)
 
         conn = self._get_connection()
         try:
             cur = conn.cursor()
-            if self.is_postgres:
-                cur.execute("SELECT id FROM notifications WHERE dedup_hash = %s;", (dedup_hash,))
-            else:
-                cur.execute("SELECT id FROM notifications WHERE dedup_hash = ?;", (dedup_hash,))
+            cur.execute(
+                f"SELECT id, resolution_status, details_json, missing_count, source_url FROM notifications "
+                f"WHERE dedup_hash = {ph} OR dedup_hash = {ph};",
+                (dedup_hash, legacy_dedup_hash),
+            )
             existing = cur.fetchone()
 
             if existing:
-                # Deduplicated: update timestamp & latest NaaSongs source page/position while preserving is_read
                 notif_id = existing[0]
+                existing_status = (existing[1] or "PENDING").upper()
+                if existing_status == "COMPLETED":
+                    cur.execute(
+                        f"UPDATE notifications SET updated_at = {ph}, canonical_album_key = COALESCE(canonical_album_key, {ph}) WHERE id = {ph};",
+                        (now, canonical_key, notif_id),
+                    )
+                    conn.commit()
+                    return False
+
+                try:
+                    existing_songs = json.loads(existing[2] or "[]")
+                except Exception:
+                    existing_songs = []
+                merged_songs = deduplicate_and_merge_song_dicts(existing_songs, clean_songs)
+                merged_missing = len([s for s in merged_songs if not s.get("exists_in_catalog")]) if merged_songs else missing_count
+                next_status = existing_status if existing_status == "PARTIALLY_COMPLETED" else resolution_status
+                if merged_songs and merged_missing == 0 and notification_type != NotificationType.ALBUM_UPDATED:
+                    next_status = "COMPLETED"
+
+                cur.execute(f"""
+                    UPDATE notifications
+                    SET updated_at = {ph}, details_json = {ph}, missing_count = {ph},
+                        language = {ph}, canonical_album_key = {ph}, resolution_status = {ph},
+                        source_page = COALESCE({ph}, source_page),
+                        source_position = COALESCE({ph}, source_position)
+                    WHERE id = {ph};
+                """, (now, json.dumps(merged_songs), merged_missing, norm_lang, canonical_key, next_status, source_page, source_position, notif_id))
+                if next_status == "COMPLETED":
+                    cur.execute(
+                        f"UPDATE notifications SET is_read = {'TRUE' if self.is_postgres else '1'} WHERE id = {ph};",
+                        (notif_id,),
+                    )
+                conn.commit()
+                return False
+
+            # Canonical consolidation check across active & completed rows
+            cur.execute(
+                f"""
+                SELECT id, notification_type, album_name, language, resolution_status,
+                       source_url, source_page, source_position, missing_count, is_read,
+                       details_json, music_director, year, artwork_url
+                FROM notifications
+                WHERE COALESCE(canonical_album_key, '') = {ph}
+                   OR canonical_album_key IS NULL
+                   OR COALESCE(resolution_status, 'PENDING') IN ('PENDING', 'PARTIALLY_COMPLETED');
+                """,
+                (canonical_key,),
+            )
+            candidates = cur.fetchall()
+            active_matches = []
+            completed_matches = []
+            for row in candidates:
+                r_key, _, _ = compute_canonical_album_key(row[2], row[3])
+                if r_key != canonical_key:
+                    continue
+                r_status = (row[4] or "PENDING").upper()
+                if r_status in ("PENDING", "PARTIALLY_COMPLETED"):
+                    active_matches.append(row)
+                elif r_status == "COMPLETED":
+                    completed_matches.append(row)
+
+            # Never recreate notification if every incoming missing song was already verified COMPLETED
+            if not active_matches and completed_matches and notification_type != NotificationType.ALBUM_UPDATED:
+                verified_completed_keys = set()
+                for c_row in completed_matches:
+                    try:
+                        c_songs = json.loads(c_row[10] or "[]")
+                    except Exception:
+                        c_songs = []
+                    for cs in c_songs:
+                        if cs.get("exists_in_catalog") and cs.get("song_title"):
+                            verified_completed_keys.add(song_identity_key(cs["song_title"]))
+                incoming_missing_list = [s for s in clean_songs if not s.get("exists_in_catalog")]
+                if incoming_missing_list and all(
+                    song_identity_key(s.get("song_title")) in verified_completed_keys
+                    for s in incoming_missing_list
+                ):
+                    return False
+
+            if active_matches:
+                # Choose surviving active notification row (earliest page/position, then partial status, then specific type, then lowest id)
+                def _row_sort_key(r):
+                    pg = r[6] if r[6] is not None else 999999
+                    ps = r[7] if r[7] is not None else 999999
+                    st_rank = 0 if (r[4] or "").upper() == "PARTIALLY_COMPLETED" else 1
+                    tp_rank = 0 if r[1] in (NotificationType.NEW_SONG.value, NotificationType.MISSING_SONGS.value) else 1
+                    return (pg, ps, st_rank, tp_rank, r[0])
+
+                active_matches.sort(key=_row_sort_key)
+                survivor = active_matches[0]
+                survivor_id = survivor[0]
+
+                merged_songs: List[Dict[str, Any]] = []
+                any_partial = (resolution_status or "").upper() == "PARTIALLY_COMPLETED"
+                any_song_level_type = notification_type in (NotificationType.NEW_SONG, NotificationType.MISSING_SONGS)
+                page_pos_candidates = []
+                if source_page is not None:
+                    page_pos_candidates.append((source_page, source_position if source_position is not None else 999999, source_position))
+
+                for m in active_matches:
+                    if (m[4] or "").upper() == "PARTIALLY_COMPLETED":
+                        any_partial = True
+                    if m[1] in (NotificationType.NEW_SONG.value, NotificationType.MISSING_SONGS.value):
+                        any_song_level_type = True
+                    if m[6] is not None:
+                        page_pos_candidates.append((m[6], m[7] if m[7] is not None else 999999, m[7]))
+                    try:
+                        m_songs = json.loads(m[10] or "[]")
+                    except Exception:
+                        m_songs = []
+                    merged_songs = deduplicate_and_merge_song_dicts(merged_songs, m_songs)
+
+                merged_songs = deduplicate_and_merge_song_dicts(merged_songs, clean_songs)
+                missing_list = [s for s in merged_songs if not s.get("exists_in_catalog")]
+                new_missing_count = len(missing_list) if merged_songs else missing_count
+
+                # Mark duplicate active rows COMPLETED + read so bell list never has >1 active row per (album, language)
+                for dup_row in active_matches[1:]:
+                    cur.execute(
+                        f"UPDATE notifications SET resolution_status = 'COMPLETED', is_read = {'TRUE' if self.is_postgres else '1'}, updated_at = {ph} WHERE id = {ph};",
+                        (now, dup_row[0]),
+                    )
+
+                any_catalog_song = any(bool(s.get("exists_in_catalog")) for s in merged_songs)
+                if any_catalog_song or notification_type in (NotificationType.NEW_SONG, NotificationType.MISSING_SONGS):
+                    effective_type = NotificationType.NEW_SONG if new_missing_count <= 1 else NotificationType.MISSING_SONGS
+                else:
+                    effective_type = notification_type
+
+                if merged_songs and new_missing_count == 0 and effective_type != NotificationType.ALBUM_UPDATED:
+                    effective_status = "COMPLETED"
+                elif any_partial:
+                    effective_status = "PARTIALLY_COMPLETED"
+                else:
+                    effective_status = "PENDING"
+
+                if page_pos_candidates:
+                    best_cand = min(page_pos_candidates, key=lambda x: (x[0], x[1]))
+                    best_page, best_pos = best_cand[0], best_cand[2]
+                else:
+                    best_page, best_pos = survivor[6], survivor[7]
+
+                eff_director = music_director if (music_director and music_director != "Unknown") else (survivor[11] or "Unknown")
+                eff_year = year or survivor[12] or 2026
+                eff_artwork = artwork_url or survivor[13]
+                eff_source_url = survivor[5] or source_url
+                if source_url and (not eff_source_url or len(source_url) > len(eff_source_url)):
+                    eff_source_url = source_url
+
+                new_title, new_message = build_notification_summary_text(
+                    effective_type,
+                    clean_display_name,
+                    norm_lang,
+                    merged_songs,
+                    music_director=eff_director,
+                    year=eff_year,
+                )
+
+                new_missing_titles = sorted([s.get("song_title", "") for s in missing_list])
+                candidate_hash = hashlib.sha256(
+                    f"{clean_display_name}:{norm_lang}:{effective_type.value}:{','.join(new_missing_titles)}".encode("utf-8")
+                ).hexdigest()
+                cur.execute(f"SELECT id FROM notifications WHERE dedup_hash = {ph} AND id != {ph};", (candidate_hash, survivor_id))
+                if cur.fetchone():
+                    candidate_hash = f"{candidate_hash}:{survivor_id}"
+
                 if self.is_postgres:
                     cur.execute("""
                         UPDATE notifications
-                        SET updated_at = %s, details_json = %s, missing_count = %s,
-                            language = %s, resolution_status = %s,
-                            source_page = COALESCE(%s, source_page),
-                            source_position = COALESCE(%s, source_position)
+                        SET notification_type = %s, title = %s, message = %s, album_name = %s,
+                            artwork_url = %s, music_director = %s, year = %s, language = %s,
+                            canonical_album_key = %s, resolution_status = %s, source_url = %s,
+                            source_page = %s, source_position = %s, missing_count = %s,
+                            details_json = %s, dedup_hash = %s, updated_at = %s
                         WHERE id = %s;
-                    """, (now, details_json, missing_count, language, resolution_status, source_page, source_position, notif_id))
+                    """, (
+                        effective_type.value, new_title, new_message, clean_display_name,
+                        eff_artwork, eff_director, eff_year, norm_lang,
+                        canonical_key, effective_status, eff_source_url,
+                        best_page, best_pos, new_missing_count,
+                        json.dumps(merged_songs), candidate_hash, now, survivor_id
+                    ))
                 else:
                     cur.execute("""
                         UPDATE notifications
-                        SET updated_at = ?, details_json = ?, missing_count = ?,
-                            language = ?, resolution_status = ?,
-                            source_page = COALESCE(?, source_page),
-                            source_position = COALESCE(?, source_position)
+                        SET notification_type = ?, title = ?, message = ?, album_name = ?,
+                            artwork_url = ?, music_director = ?, year = ?, language = ?,
+                            canonical_album_key = ?, resolution_status = ?, source_url = ?,
+                            source_page = ?, source_position = ?, missing_count = ?,
+                            details_json = ?, dedup_hash = ?, updated_at = ?
                         WHERE id = ?;
-                    """, (now, details_json, missing_count, language, resolution_status, source_page, source_position, notif_id))
+                    """, (
+                        effective_type.value, new_title, new_message, clean_display_name,
+                        eff_artwork, eff_director, eff_year, norm_lang,
+                        canonical_key, effective_status, eff_source_url,
+                        best_page, best_pos, new_missing_count,
+                        json.dumps(merged_songs), candidate_hash, now, survivor_id
+                    ))
+                if effective_status == "COMPLETED":
+                    cur.execute(
+                        f"UPDATE notifications SET is_read = {'TRUE' if self.is_postgres else '1'} WHERE id = {ph};",
+                        (survivor_id,),
+                    )
                 conn.commit()
                 return False
 
@@ -853,21 +1249,21 @@ class LatestReleasesDB:
                     INSERT INTO notifications (
                         album_id, notification_type, title, message, album_name, artwork_url,
                         music_director, year, language, resolution_status, source_url, source_page, source_position,
-                        missing_count, is_read, created_at, updated_at, details_json, dedup_hash
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s, %s);
+                        missing_count, is_read, created_at, updated_at, details_json, dedup_hash, canonical_album_key
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s, %s, %s);
                 """, (album_id, notification_type.value, title, message, album_name, artwork_url,
-                      music_director, year, language, resolution_status, source_url, source_page, source_position,
-                      missing_count, now, now, details_json, dedup_hash))
+                      music_director, year, norm_lang, resolution_status, source_url, source_page, source_position,
+                      missing_count, now, now, details_json, dedup_hash, canonical_key))
             else:
                 cur.execute("""
                     INSERT INTO notifications (
                         album_id, notification_type, title, message, album_name, artwork_url,
                         music_director, year, language, resolution_status, source_url, source_page, source_position,
-                        missing_count, is_read, created_at, updated_at, details_json, dedup_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?);
+                        missing_count, is_read, created_at, updated_at, details_json, dedup_hash, canonical_album_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?);
                 """, (album_id, notification_type.value, title, message, album_name, artwork_url,
-                      music_director, year, language, resolution_status, source_url, source_page, source_position,
-                      missing_count, now, now, details_json, dedup_hash))
+                      music_director, year, norm_lang, resolution_status, source_url, source_page, source_position,
+                      missing_count, now, now, details_json, dedup_hash, canonical_key))
 
             conn.commit()
             return True
@@ -938,7 +1334,7 @@ class LatestReleasesDB:
                 SELECT id, album_id, notification_type, title, message, album_name, artwork_url,
                        music_director, year, source_url, missing_count, is_read, created_at,
                        updated_at, details_json, dedup_hash, language, resolution_status,
-                       source_page, source_position
+                       source_page, source_position, canonical_album_key
                 FROM notifications
                 {where_clause}
                 ORDER BY
@@ -979,26 +1375,56 @@ class LatestReleasesDB:
         notification_id: int,
         status: str,
         updated_songs: Optional[List[Dict[str, Any]]] = None,
-        missing_count: Optional[int] = None
+        missing_count: Optional[int] = None,
+        notification_type: Optional[str] = None,
+        title: Optional[str] = None,
+        message: Optional[str] = None,
+        language: Optional[str] = None,
+        canonical_album_key: Optional[str] = None,
+        is_read: Optional[bool] = None,
     ):
         now = time.time()
         conn = self._get_connection()
         try:
             cur = conn.cursor()
-            set_clauses = ["resolution_status = %s" if self.is_postgres else "resolution_status = ?",
-                           "updated_at = %s" if self.is_postgres else "updated_at = ?"]
-            params = [status, now]
+            ph = "%s" if self.is_postgres else "?"
+            set_clauses = [f"resolution_status = {ph}", f"updated_at = {ph}"]
+            params: List[Any] = [status, now]
 
             if updated_songs is not None:
-                set_clauses.append("details_json = %s" if self.is_postgres else "details_json = ?")
+                set_clauses.append(f"details_json = {ph}")
                 params.append(json.dumps(updated_songs))
 
             if missing_count is not None:
-                set_clauses.append("missing_count = %s" if self.is_postgres else "missing_count = ?")
+                set_clauses.append(f"missing_count = {ph}")
                 params.append(missing_count)
 
+            if notification_type is not None:
+                set_clauses.append(f"notification_type = {ph}")
+                params.append(notification_type)
+
+            if title is not None:
+                set_clauses.append(f"title = {ph}")
+                params.append(title)
+
+            if message is not None:
+                set_clauses.append(f"message = {ph}")
+                params.append(message)
+
+            if language is not None:
+                set_clauses.append(f"language = {ph}")
+                params.append(language)
+
+            if canonical_album_key is not None:
+                set_clauses.append(f"canonical_album_key = {ph}")
+                params.append(canonical_album_key)
+
+            if is_read is not None:
+                set_clauses.append(f"is_read = {ph}")
+                params.append(bool(is_read) if self.is_postgres else (1 if is_read else 0))
+
             params.append(notification_id)
-            query = f"UPDATE notifications SET {', '.join(set_clauses)} WHERE id = {'%s' if self.is_postgres else '?'};"
+            query = f"UPDATE notifications SET {', '.join(set_clauses)} WHERE id = {ph};"
             cur.execute(query, tuple(params))
             conn.commit()
         finally:
@@ -1083,7 +1509,7 @@ class LatestReleasesDB:
                 SELECT id, album_id, notification_type, title, message, album_name, artwork_url,
                        music_director, year, source_url, missing_count, is_read, created_at,
                        updated_at, details_json, dedup_hash, language, resolution_status,
-                       source_page, source_position
+                       source_page, source_position, canonical_album_key
                 FROM notifications
                 WHERE id IN ({placeholders});
             """

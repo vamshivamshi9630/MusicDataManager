@@ -128,7 +128,9 @@ class AlbumParser:
         # 1. Tier 1: Explicit metadata in HTML: "Language:- Tamil"
         lang_meta = re.search(r'Language:-\s*([^<\n\r]+)', html_content, re.IGNORECASE)
         if lang_meta:
-            candidate = html.unescape(lang_meta.group(1)).strip().title()
+            from backend.services.catalog import CloudCatalogService
+            raw_cand = html.unescape(lang_meta.group(1)).strip()
+            candidate = CloudCatalogService.normalize_language_name(raw_cand) or raw_cand.title()
             for lang in cls.KNOWN_LANGUAGES:
                 if lang.lower() in candidate.lower():
                     detected_language = lang
@@ -737,35 +739,59 @@ class AlbumParser:
                     cls._attach_links_to_track(active_track, full_text, links)
                     continue
 
-        # Convert structured track dicts into DiscoveredSong objects preserving order
+        # Convert structured track dicts into DiscoveredSong objects, consolidating duplicate version-identical entries
+        from backend.services.catalog import CloudCatalogService
         songs: List[DiscoveredSong] = []
-        seen_keys = set()
+        songs_by_identity: Dict[Tuple[str, Tuple[str, ...]], DiscoveredSong] = {}
         for t in parsed_tracks:
             title = t["song_title"]
             norm_title = normalize_text(title)
-            dedup_key = (t["track_number"], norm_title)
-            if not norm_title or dedup_key in seen_keys:
+            if not norm_title:
                 continue
-            seen_keys.add(dedup_key)
 
+            comps = CloudCatalogService.parse_song_title_components(title)
+            song_id_key = (comps["base_core"] or norm_title, comps["version_tags"])
             bitrates = t["available_bitrates"]
             bitrate_str = ", ".join(bitrates) if bitrates else None
 
-            songs.append(
-                DiscoveredSong(
-                    song_title=title,
-                    normalized_title=norm_title,
-                    track_number=t["track_number"],
-                    source_audio_url=t["source_audio_url"],
-                    singer=t["singer"],
-                    available_bitrate=bitrate_str,
-                    available_bitrates=bitrates,
-                    download_links=t["download_links"],
-                    source_page_url=source_url,
-                    link_available=t["link_available"],
-                    download_authorized=t["download_authorized"],
-                )
+            if song_id_key in songs_by_identity:
+                existing = songs_by_identity[song_id_key]
+                prev_bitrate_str = str(existing.available_bitrate or "")
+                for b_lbl, b_url in (t.get("download_links") or {}).items():
+                    if b_lbl not in existing.download_links:
+                        existing.download_links[b_lbl] = b_url
+                    if b_lbl not in existing.available_bitrates:
+                        existing.available_bitrates.append(b_lbl)
+                if t.get("source_audio_url"):
+                    if not existing.source_audio_url or (
+                        ("320" in str(bitrate_str or "") or "320" in str(t.get("source_audio_url") or ""))
+                        and "320" not in prev_bitrate_str
+                        and "320" not in str(existing.source_audio_url or "")
+                    ):
+                        existing.source_audio_url = t["source_audio_url"]
+                if existing.available_bitrates:
+                    existing.available_bitrate = ", ".join(existing.available_bitrates)
+                if t.get("singer") and not existing.singer:
+                    existing.singer = t["singer"]
+                existing.link_available = existing.link_available or t["link_available"]
+                existing.download_authorized = existing.download_authorized or t["download_authorized"]
+                continue
+
+            ds = DiscoveredSong(
+                song_title=title,
+                normalized_title=norm_title,
+                track_number=t["track_number"],
+                source_audio_url=t["source_audio_url"],
+                singer=t["singer"],
+                available_bitrate=bitrate_str,
+                available_bitrates=list(bitrates),
+                download_links=dict(t["download_links"]),
+                source_page_url=source_url,
+                link_available=t["link_available"],
+                download_authorized=t["download_authorized"],
             )
+            songs_by_identity[song_id_key] = ds
+            songs.append(ds)
 
         return songs
 
