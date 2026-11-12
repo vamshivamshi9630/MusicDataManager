@@ -195,6 +195,11 @@ class ScanRecord:
     new_albums_count: int = 0
     new_songs_count: int = 0
     pages_checked: int = 1
+    pages_requested: int = 0
+    pages_successfully_checked: int = 0
+    pages_unavailable: int = 0
+    albums_discovered: int = 0
+    albums_inspected: int = 0
     resolved_notifications_count: int = 0
     failed_pages: List[str] = field(default_factory=list)
     error_message: Optional[str] = None
@@ -210,6 +215,11 @@ class ScanRecord:
             "new_albums_count": self.new_albums_count,
             "new_songs_count": self.new_songs_count,
             "pages_checked": self.pages_checked,
+            "pages_requested": self.pages_requested,
+            "pages_successfully_checked": self.pages_successfully_checked,
+            "pages_unavailable": self.pages_unavailable,
+            "albums_discovered": self.albums_discovered,
+            "albums_inspected": self.albums_inspected,
             "resolved_notifications_count": self.resolved_notifications_count,
             "failed_pages": self.failed_pages,
             "error_message": self.error_message,

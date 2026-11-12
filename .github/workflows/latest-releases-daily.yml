@@ -22,6 +22,7 @@ jobs:
     env:
       CLOUD_MODE: "1"
       LATEST_RELEASES_ENABLED: "1"
+      LATEST_RELEASES_MAX_PAGES: "20"
       REQUIRE_POSTGRES: "1"
       GITHUB_OWNER: vamshivamshi9630
       GITHUB_REPOSITORY: MusicData

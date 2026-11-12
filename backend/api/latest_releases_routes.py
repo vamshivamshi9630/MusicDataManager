@@ -1,10 +1,11 @@
 import logging
 import re
+import threading
 import urllib.parse
 import urllib.request
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from backend.core.config import settings
 from backend.services.latest_releases.models import TrackingStatus
@@ -198,10 +199,43 @@ def get_engine_status():
     }
 
 @router.post("/check-now")
-def trigger_manual_check(limit: int = Query(15, description="Number of albums to scan")):
-    """Trigger an immediate manual scan from the Web UI."""
+def trigger_manual_check(
+    limit: Optional[int] = Query(None, description="Optional cap on albums to inspect (default: scans all up to max_pages)"),
+    max_pages: Optional[int] = Query(None, description="Max paginated index pages to scan (default: 20)"),
+    background: bool = Query(False, description="Run scan asynchronously to prevent HTTP gateway timeouts")
+):
+    """Trigger an immediate manual scan from the Web UI across up to 20 pages."""
     engine = LatestReleasesDiscoveryEngine()
-    result = engine.run_scan(locked_by="manual_web_ui", limit_albums=limit)
+    if background:
+        lock_info = engine.db.get_lock_status()
+        if lock_info.get("is_locked"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Another scan is already in progress (locked by {lock_info.get('locked_by')})."
+            )
+        recent = engine.db.get_recent_scans(limit=1)
+        baseline_scan_id = recent[0]["id"] if recent else 0
+
+        def _bg_worker():
+            try:
+                engine.run_scan(locked_by="manual_web_ui", max_pages=max_pages, limit_albums=limit)
+            except Exception as bg_err:
+                logger.error(f"Background discovery scan error: {bg_err}")
+
+        t = threading.Thread(target=_bg_worker, daemon=True)
+        t.start()
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "status": "STARTED",
+                "async": True,
+                "baseline_scan_id": baseline_scan_id,
+                "max_pages": max_pages or settings.LATEST_RELEASES_MAX_PAGES,
+            }
+        )
+
+    result = engine.run_scan(locked_by="manual_web_ui", max_pages=max_pages, limit_albums=limit)
     if not result.get("success") and result.get("status") == "LOCKED":
         raise HTTPException(status_code=409, detail=result.get("message"))
     return result
@@ -240,7 +274,11 @@ def update_song_tracking(req: TrackingUpdateRequest):
     }
 
 @router.post("/cron-trigger")
-def cron_trigger(x_cron_secret: Optional[str] = Header(None)):
+def cron_trigger(
+    x_cron_secret: Optional[str] = Header(None),
+    limit: Optional[int] = Query(None, description="Optional album cap (default: no cap)"),
+    max_pages: Optional[int] = Query(None, description="Max paginated pages to scan (default: 20)")
+):
     """
     Webhook trigger endpoint for external schedulers or Render Cron jobs.
     Protected by secret header verification.
@@ -249,5 +287,5 @@ def cron_trigger(x_cron_secret: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing X-Cron-Secret header.")
 
     engine = LatestReleasesDiscoveryEngine()
-    result = engine.run_scan(locked_by="external_cron_webhook", limit_albums=20)
+    result = engine.run_scan(locked_by="external_cron_webhook", max_pages=max_pages, limit_albums=limit)
     return result

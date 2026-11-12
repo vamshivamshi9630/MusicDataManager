@@ -89,8 +89,8 @@ class CloudCatalogService:
 
     def get_albums_index(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         now = time.time()
-        # Refetch if cache is missing, force_refresh requested, or cache is older than 15 seconds
-        if not force_refresh and self._albums_index_cache is not None and (now - self._last_fetch_time) < 15:
+        # Refetch if cache is missing, force_refresh requested, or cache is older than 60 seconds
+        if not force_refresh and self._albums_index_cache is not None and (now - self._last_fetch_time) < 60:
             return self._albums_index_cache
         try:
             idx = self._fetch_json("metadata/indexes/albums.json")

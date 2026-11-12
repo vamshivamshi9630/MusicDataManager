@@ -16,12 +16,17 @@ def main():
         actor = os.environ.get("SCHEDULER_ACTOR") or (
             "github_actions_cron" if os.environ.get("GITHUB_ACTIONS", "").lower() == "true" else "cli_cron"
         )
-        limit_albums = int(os.environ.get("LATEST_RELEASES_LIMIT_ALBUMS", "20"))
-        logger.info(f"Executing Latest Releases Discovery Scan (actor={actor}, limit_albums={limit_albums})...")
+        max_pages_env = os.environ.get("LATEST_RELEASES_MAX_PAGES", "").strip()
+        max_pages = int(max_pages_env) if max_pages_env else None
+        limit_env = os.environ.get("LATEST_RELEASES_LIMIT_ALBUMS", "").strip()
+        limit_albums = int(limit_env) if (limit_env and int(limit_env) > 0) else None
+        logger.info(
+            f"Executing Latest Releases Discovery Scan (actor={actor}, max_pages={max_pages or 20}, limit_albums={limit_albums})..."
+        )
 
         try:
             engine = LatestReleasesDiscoveryEngine()
-            result = engine.run_scan(locked_by=actor, limit_albums=limit_albums)
+            result = engine.run_scan(locked_by=actor, max_pages=max_pages, limit_albums=limit_albums)
         except Exception as e:
             # Never emit full connection strings or secret values
             logger.error(f"Fatal CLI scan error ({type(e).__name__}): {e}")

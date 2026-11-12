@@ -244,6 +244,107 @@ class AlbumParser:
         return candidates
 
     @classmethod
+    def parse_pagination_info(cls, html_content: str, current_url: str = "") -> Dict[str, Any]:
+        """
+        Inspects WordPress/NaaSongs pagination markup (`div.nav-links`, `a.next.page-numbers`, etc.).
+        Returns structured pagination metadata without mutating or failing on minimal HTML snippets.
+        """
+        default_page = 1
+        if current_url:
+            m_url = re.search(r'/page/(\d+)(?:/|\?|$)', current_url)
+            if m_url:
+                try:
+                    default_page = int(m_url.group(1))
+                except ValueError:
+                    pass
+
+        if not html_content:
+            return {
+                "pagination_present": False,
+                "current_page": default_page,
+                "next_page_url": None,
+                "last_page_number": None,
+                "page_numbers": [],
+                "has_next": None,
+            }
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        nav_container = (
+            soup.select_one("div.nav-links")
+            or soup.select_one("nav.navigation.pagination")
+            or soup.select_one("div.wp-pagenavi")
+            or soup.select_one("div.pagination")
+            or soup.select_one("ul.page-numbers")
+        )
+        head_next = soup.select_one('link[rel="next"][href]')
+
+        if nav_container is None and head_next is None:
+            return {
+                "pagination_present": False,
+                "current_page": default_page,
+                "next_page_url": None,
+                "last_page_number": None,
+                "page_numbers": [],
+                "has_next": None,
+            }
+
+        current_page = default_page
+        page_numbers: List[int] = []
+        next_page_url: Optional[str] = None
+        base_for_join = current_url or "https://naasongs.com.co/"
+
+        if nav_container is not None:
+            cur_el = nav_container.select_one(".page-numbers.current") or nav_container.select_one("span.current")
+            if cur_el:
+                cur_txt = re.sub(r'[^\d]', '', cur_el.get_text(" ", strip=True))
+                if cur_txt:
+                    try:
+                        current_page = int(cur_txt)
+                        page_numbers.append(current_page)
+                    except ValueError:
+                        pass
+
+            nxt_el = nav_container.select_one("a.next.page-numbers[href]") or nav_container.select_one('a[rel="next"][href]')
+            if nxt_el and nxt_el.get("href"):
+                next_page_url = urllib.parse.urljoin(base_for_join, nxt_el["href"].strip())
+
+            for el in nav_container.select("a.page-numbers, a.page, span.page-numbers"):
+                classes = " ".join(el.get("class") or []).lower()
+                if "next" in classes or "prev" in classes or "dots" in classes:
+                    continue
+                txt = re.sub(r'[^\d]', '', el.get_text(" ", strip=True))
+                if txt:
+                    try:
+                        page_numbers.append(int(txt))
+                    except ValueError:
+                        pass
+
+            # Fallback: extract page numbers from /page/<N> hrefs inside nav container
+            for a_el in nav_container.find_all("a", href=True):
+                m_href = re.search(r'/page/(\d+)(?:/|\?|$)', a_el["href"])
+                if m_href:
+                    try:
+                        page_numbers.append(int(m_href.group(1)))
+                    except ValueError:
+                        pass
+
+        if not next_page_url and head_next and head_next.get("href"):
+            next_page_url = urllib.parse.urljoin(base_for_join, head_next["href"].strip())
+
+        unique_pages = sorted(set(page_numbers))
+        last_page_number = max(unique_pages) if unique_pages else None
+        has_next = bool(next_page_url) or any(p > current_page for p in unique_pages)
+
+        return {
+            "pagination_present": True,
+            "current_page": current_page,
+            "next_page_url": next_page_url,
+            "last_page_number": last_page_number,
+            "page_numbers": unique_pages,
+            "has_next": has_next,
+        }
+
+    @classmethod
     def _find_main_content_root(cls, soup: BeautifulSoup) -> Tag:
         """
         Locates main article/entry-content container and excludes sidebars, SEO footers, navigation.

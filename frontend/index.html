@@ -1238,9 +1238,14 @@
                 const data = await res.json();
                 const lbl = document.getElementById('notif-last-scan-label');
                 if (data.last_scan && data.last_scan.completed_at) {
-                    const dt = new Date(data.last_scan.completed_at * 1000);
-                    const pages = data.last_scan.pages_checked || 1;
-                    lbl.innerText = `Last checked: ${dt.toLocaleTimeString()} (${dt.toLocaleDateString()}) • ${pages} pages • Daily 09:00 AM IST`;
+                    const ls = data.last_scan;
+                    const dt = new Date(ls.completed_at * 1000);
+                    const pOk = ls.pages_successfully_checked ?? ls.pages_checked ?? 0;
+                    const pReq = ls.pages_requested ?? pOk;
+                    const pUnavail = ls.pages_unavailable ?? Math.max(0, pReq - pOk);
+                    const aDisc = ls.albums_discovered ?? ls.albums_found ?? 0;
+                    const aInsp = ls.albums_inspected ?? aDisc;
+                    lbl.innerText = `Last checked: ${dt.toLocaleTimeString()} • Pages: ${pOk}/${pReq} ok (${pUnavail} unavail) • Albums: ${aInsp}/${aDisc} • Daily 09:00 AM IST`;
                 } else {
                     lbl.innerText = `Source: naasongs.com.co • Daily 09:00 AM IST`;
                 }
@@ -1651,21 +1656,35 @@
                     const isSuccess = s.status === 'COMPLETED';
                     const statusBadge = isSuccess
                         ? '<span class="text-[10px] bg-emerald-950 border border-emerald-800 text-emerald-400 font-bold px-2 py-0.5 rounded">SUCCESS</span>'
-                        : '<span class="text-[10px] bg-rose-950 border border-rose-800 text-rose-400 font-bold px-2 py-0.5 rounded">FAILED</span>';
+                        : (s.status === 'IN_PROGRESS'
+                            ? '<span class="text-[10px] bg-amber-950 border border-amber-800 text-amber-300 font-bold px-2 py-0.5 rounded">RUNNING</span>'
+                            : '<span class="text-[10px] bg-rose-950 border border-rose-800 text-rose-400 font-bold px-2 py-0.5 rounded">FAILED</span>');
+
+                    const pOk = s.pages_successfully_checked ?? s.pages_checked ?? 0;
+                    const pReq = s.pages_requested ?? pOk;
+                    const pUnavail = s.pages_unavailable ?? Math.max(0, pReq - pOk);
+                    const aDisc = s.albums_discovered ?? s.albums_found ?? 0;
+                    const aInsp = s.albums_inspected ?? aDisc;
 
                     html += `
-                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
-                            <div>
+                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs space-y-2">
+                            <div class="flex items-center justify-between gap-2 flex-wrap">
                                 <div class="flex items-center gap-2">
                                     <span class="font-bold text-white">${dt.toLocaleDateString()} ${dt.toLocaleTimeString()}</span>
                                     ${statusBadge}
                                     <span class="text-[11px] text-slate-500">(${dur})</span>
                                 </div>
-                                <p class="text-[11px] text-slate-400 mt-0.5">
-                                    Triggered by: <span class="text-slate-300">${s.locked_by}</span> • Pages: <span class="text-slate-300">${s.pages_checked || 1}</span> • Checked: ${s.albums_found} albums • New Albums: ${s.new_albums_count} • New Songs: ${s.new_songs_count}
-                                </p>
-                                ${s.error_message ? `<p class="text-[11px] text-rose-400 mt-1 font-mono">${s.error_message}</p>` : ''}
+                                <span class="text-[11px] text-slate-400">Triggered by: <span class="text-slate-300 font-medium">${escapeHtml(String(s.locked_by || 'unknown'))}</span></span>
                             </div>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[11px]">
+                                <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-400">Pages Requested: <span class="text-white font-semibold">${pReq}</span></div>
+                                <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-400">Pages Checked: <span class="text-emerald-300 font-semibold">${pOk}</span></div>
+                                <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-400">Pages Unavailable: <span class="${pUnavail > 0 ? 'text-amber-300' : 'text-slate-300'} font-semibold">${pUnavail}</span></div>
+                                <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-400">Albums Discovered: <span class="text-white font-semibold">${aDisc}</span></div>
+                                <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-400">Albums Inspected: <span class="text-cyan-300 font-semibold">${aInsp}</span></div>
+                                <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800 text-slate-400">New: <span class="text-amber-300 font-semibold">${s.new_albums_count}A / ${s.new_songs_count}S</span></div>
+                            </div>
+                            ${s.error_message ? `<p class="text-[11px] text-rose-400 font-mono">${escapeHtml(String(s.error_message))}</p>` : ''}
                         </div>
                     `;
                 });
@@ -1690,29 +1709,75 @@
             banner.innerHTML = `<span><i class="icon-loader animate-spin mr-1.5"></i> Scanning up to 20 pages on naasongs.com.co...</span>`;
 
             try {
-                const res = await fetch(`${API_BASE}/latest-releases/check-now`, { method: 'POST' });
-                const data = await res.json();
+                const res = await fetch(`${API_BASE}/latest-releases/check-now?background=true`, { method: 'POST' });
+                let data = await res.json();
 
                 if (res.status === 409) {
                     banner.className = 'px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between bg-rose-950/70 border border-rose-800 text-rose-200 block';
                     banner.innerHTML = `<span>⚠ Another scan is already in progress. Please wait a moment.</span>`;
-                } else if (!res.ok || data.success === false) {
+                    return;
+                }
+                if (!res.ok || data.success === false) {
                     throw new Error(data.error || data.detail || 'Scan failed');
-                } else {
-                    banner.className = 'px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between bg-emerald-950/70 border border-emerald-800 text-emerald-200 block';
-                    banner.innerHTML = `<span>✓ Scan completed in ${data.duration_seconds}s! Checked ${data.albums_found} albums across ${data.pages_checked || 1} pages (${data.new_albums_count} new albums, ${data.new_songs_count} new songs).</span>`;
-                    loadNotifications();
-                    loadUnreadNotificationCount();
-                    fetchLatestScanStatus();
+                }
+
+                // If running asynchronously, poll /status until completion
+                if (data.status === 'STARTED' && data.async) {
+                    const baselineId = data.baseline_scan_id || 0;
+                    const pollStart = Date.now();
+                    let finishedScan = null;
+
+                    while (Date.now() - pollStart < 360000) {
+                        await new Promise(r => setTimeout(r, 2000));
+                        const stRes = await fetch(`${API_BASE}/latest-releases/status`);
+                        if (!stRes.ok) continue;
+                        const stData = await stRes.json();
+                        const ls = stData.last_scan;
+                        const elapsed = Math.round((Date.now() - pollStart) / 1000);
+                        banner.innerHTML = `<span><i class="icon-loader animate-spin mr-1.5"></i> Scanning up to 20 pages on naasongs.com.co (${elapsed}s elapsed)...</span>`;
+
+                        if (ls && ls.id > baselineId && (ls.status === 'COMPLETED' || ls.status === 'FAILED') && !stData.is_locked) {
+                            finishedScan = ls;
+                            break;
+                        }
+                    }
+
+                    if (!finishedScan) {
+                        throw new Error('Scan is still running in background. Check Scan History shortly.');
+                    }
+                    if (finishedScan.status === 'FAILED') {
+                        throw new Error(finishedScan.error_message || 'Background discovery scan failed');
+                    }
+                    data = {
+                        ...finishedScan,
+                        duration_seconds: finishedScan.completed_at && finishedScan.started_at
+                            ? (finishedScan.completed_at - finishedScan.started_at).toFixed(2)
+                            : '0'
+                    };
+                }
+
+                const pOk = data.pages_successfully_checked ?? data.pages_checked ?? 0;
+                const pReq = data.pages_requested ?? pOk;
+                const pUnavail = data.pages_unavailable ?? Math.max(0, pReq - pOk);
+                const aDisc = data.albums_discovered ?? data.albums_found ?? 0;
+                const aInsp = data.albums_inspected ?? aDisc;
+
+                banner.className = 'px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between bg-emerald-950/70 border border-emerald-800 text-emerald-200 block';
+                banner.innerHTML = `<span>✓ Scan completed in ${data.duration_seconds}s! Pages: ${pOk}/${pReq} checked (${pUnavail} unavail) • Albums: ${aInsp}/${aDisc} inspected (${data.new_albums_count} new albums, ${data.new_songs_count} new songs).</span>`;
+                loadNotifications();
+                loadUnreadNotificationCount();
+                fetchLatestScanStatus();
+                if (currentNotifCategory === 'history') {
+                    loadScanHistory();
                 }
             } catch (e) {
                 banner.className = 'px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between bg-rose-950/70 border border-rose-800 text-rose-200 block';
-                banner.innerHTML = `<span>❌ Scan error: ${e.message}</span>`;
+                banner.innerHTML = `<span>❌ Scan error: ${escapeHtml(String(e.message || e))}</span>`;
             } finally {
                 btn.disabled = false;
                 icon.classList.remove('animate-spin');
                 txt.innerText = 'Check Now';
-                setTimeout(() => { banner.classList.add('hidden'); }, 6000);
+                setTimeout(() => { banner.classList.add('hidden'); }, 10000);
             }
         }
 

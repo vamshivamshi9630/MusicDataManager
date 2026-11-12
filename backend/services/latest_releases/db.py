@@ -102,6 +102,11 @@ class LatestReleasesDB:
                     new_albums_count INT DEFAULT 0,
                     new_songs_count INT DEFAULT 0,
                     pages_checked INT DEFAULT 1,
+                    pages_requested INT,
+                    pages_successfully_checked INT,
+                    pages_unavailable INT,
+                    albums_discovered INT,
+                    albums_inspected INT,
                     resolved_notifications_count INT DEFAULT 0,
                     failed_pages TEXT,
                     error_message TEXT,
@@ -205,6 +210,11 @@ class LatestReleasesDB:
             ("notifications", "language", "TEXT DEFAULT 'Telugu'"),
             ("notifications", "resolution_status", "VARCHAR(32) DEFAULT 'PENDING'"),
             ("discovery_scans", "pages_checked", "INT DEFAULT 1"),
+            ("discovery_scans", "pages_requested", "INT"),
+            ("discovery_scans", "pages_successfully_checked", "INT"),
+            ("discovery_scans", "pages_unavailable", "INT"),
+            ("discovery_scans", "albums_discovered", "INT"),
+            ("discovery_scans", "albums_inspected", "INT"),
             ("discovery_scans", "resolved_notifications_count", "INT DEFAULT 0"),
             ("discovery_scans", "failed_pages", "TEXT"),
             ("discovered_songs", "singer", "TEXT"),
@@ -347,6 +357,11 @@ class LatestReleasesDB:
         new_albums: int,
         new_songs: int,
         pages_checked: int = 1,
+        pages_requested: Optional[int] = None,
+        pages_successfully_checked: Optional[int] = None,
+        pages_unavailable: Optional[int] = None,
+        albums_discovered: Optional[int] = None,
+        albums_inspected: Optional[int] = None,
         resolved_notifications: int = 0,
         failed_pages: Optional[List[str]] = None,
         error_message: Optional[str] = None
@@ -354,6 +369,12 @@ class LatestReleasesDB:
         now = time.time()
         status_str = "FAILED" if error_message else "COMPLETED"
         failed_json = json.dumps(failed_pages or [])
+        eff_pages_success = pages_checked if pages_successfully_checked is None else pages_successfully_checked
+        eff_pages_req = pages_checked if pages_requested is None else pages_requested
+        eff_pages_unavail = max(0, eff_pages_req - eff_pages_success) if pages_unavailable is None else pages_unavailable
+        eff_albums_disc = albums_found if albums_discovered is None else albums_discovered
+        eff_albums_insp = albums_found if albums_inspected is None else albums_inspected
+
         conn = self._get_connection()
         try:
             cur = conn.cursor()
@@ -361,16 +382,30 @@ class LatestReleasesDB:
                 cur.execute("""
                     UPDATE discovery_scans
                     SET completed_at = %s, status = %s, albums_found = %s, new_albums_count = %s, new_songs_count = %s,
-                        pages_checked = %s, resolved_notifications_count = %s, failed_pages = %s, error_message = %s
+                        pages_checked = %s, pages_requested = %s, pages_successfully_checked = %s,
+                        pages_unavailable = %s, albums_discovered = %s, albums_inspected = %s,
+                        resolved_notifications_count = %s, failed_pages = %s, error_message = %s
                     WHERE id = %s;
-                """, (now, status_str, albums_found, new_albums, new_songs, pages_checked, resolved_notifications, failed_json, error_message, scan_id))
+                """, (
+                    now, status_str, albums_found, new_albums, new_songs,
+                    eff_pages_success, eff_pages_req, eff_pages_success,
+                    eff_pages_unavail, eff_albums_disc, eff_albums_insp,
+                    resolved_notifications, failed_json, error_message, scan_id
+                ))
             else:
                 cur.execute("""
                     UPDATE discovery_scans
                     SET completed_at = ?, status = ?, albums_found = ?, new_albums_count = ?, new_songs_count = ?,
-                        pages_checked = ?, resolved_notifications_count = ?, failed_pages = ?, error_message = ?
+                        pages_checked = ?, pages_requested = ?, pages_successfully_checked = ?,
+                        pages_unavailable = ?, albums_discovered = ?, albums_inspected = ?,
+                        resolved_notifications_count = ?, failed_pages = ?, error_message = ?
                     WHERE id = ?;
-                """, (now, status_str, albums_found, new_albums, new_songs, pages_checked, resolved_notifications, failed_json, error_message, scan_id))
+                """, (
+                    now, status_str, albums_found, new_albums, new_songs,
+                    eff_pages_success, eff_pages_req, eff_pages_success,
+                    eff_pages_unavail, eff_albums_disc, eff_albums_insp,
+                    resolved_notifications, failed_json, error_message, scan_id
+                ))
             conn.commit()
         finally:
             conn.close()
@@ -379,32 +414,48 @@ class LatestReleasesDB:
         conn = self._get_connection()
         try:
             cur = conn.cursor()
-            cur.execute(f"SELECT * FROM discovery_scans ORDER BY started_at DESC LIMIT {limit};")
+            cur.execute(f"""
+                SELECT id, started_at, completed_at, status, albums_found,
+                       new_albums_count, new_songs_count, pages_checked,
+                       resolved_notifications_count, failed_pages, error_message, locked_by,
+                       pages_requested, pages_successfully_checked, pages_unavailable,
+                       albums_discovered, albums_inspected
+                FROM discovery_scans
+                ORDER BY started_at DESC LIMIT {int(limit)};
+            """)
             rows = cur.fetchall()
+            col_names = [desc[0].lower() for desc in (cur.description or [])]
             results = []
             for r in rows:
-                if isinstance(r, tuple):
-                    d = {
-                        "id": r[0], "started_at": r[1], "completed_at": r[2], "status": r[3],
-                        "albums_found": r[4], "new_albums_count": r[5], "new_songs_count": r[6],
-                        "error_message": r[7], "locked_by": r[8],
-                        "pages_checked": r[9] if len(r) > 9 and r[9] is not None else 1,
-                        "resolved_notifications_count": r[10] if len(r) > 10 and r[10] is not None else 0,
-                    }
-                    try:
-                        d["failed_pages"] = json.loads(r[11]) if len(r) > 11 and r[11] else []
-                    except Exception:
-                        d["failed_pages"] = []
-                    results.append(d)
+                if isinstance(r, tuple) and col_names:
+                    d = dict(zip(col_names, r))
                 else:
-                    d = dict(r)
-                    try:
-                        d["failed_pages"] = json.loads(d.get("failed_pages") or "[]")
-                    except Exception:
-                        d["failed_pages"] = []
-                    d["pages_checked"] = d.get("pages_checked", 1) or 1
-                    d["resolved_notifications_count"] = d.get("resolved_notifications_count", 0) or 0
-                    results.append(d)
+                    d = {k.lower(): v for k, v in dict(r).items()}
+
+                try:
+                    d["failed_pages"] = json.loads(d.get("failed_pages") or "[]")
+                except Exception:
+                    d["failed_pages"] = []
+
+                pages_chk = d.get("pages_checked")
+                if pages_chk is None:
+                    pages_chk = 0
+                d["pages_checked"] = pages_chk
+                d["resolved_notifications_count"] = d.get("resolved_notifications_count") or 0
+
+                # Backfill legacy rows (where new columns are NULL) without fabricating false counts
+                if d.get("pages_successfully_checked") is None:
+                    d["pages_successfully_checked"] = pages_chk
+                if d.get("pages_unavailable") is None:
+                    d["pages_unavailable"] = len(d["failed_pages"])
+                if d.get("pages_requested") is None:
+                    d["pages_requested"] = d["pages_successfully_checked"] + d["pages_unavailable"]
+                if d.get("albums_discovered") is None:
+                    d["albums_discovered"] = d.get("albums_found") or 0
+                if d.get("albums_inspected") is None:
+                    d["albums_inspected"] = d.get("albums_found") or 0
+
+                results.append(d)
             return results
         finally:
             conn.close()

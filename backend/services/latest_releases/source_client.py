@@ -1,8 +1,9 @@
 import time
+import threading
 import urllib.request
 import urllib.error
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger("musicdata.latest_releases.source_client")
 
@@ -15,19 +16,31 @@ class SourceClient:
     BASE_URL = "https://naasongs.com.co"
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-    def __init__(self, request_delay: float = 0.5, timeout: int = 15):
+    def __init__(self, request_delay: float = 0.15, timeout: int = 15):
         self.request_delay = request_delay
         self.timeout = timeout
         self.last_request_time = 0.0
+        self._rate_lock = threading.Lock()
+        self._next_allowed_time = 0.0
+        self.last_fetch_meta: Dict[str, Any] = {}
 
     def _wait_for_rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.request_delay:
-            time.sleep(self.request_delay - elapsed)
-        self.last_request_time = time.time()
+        sleep_for = 0.0
+        with self._rate_lock:
+            now = time.time()
+            if now < self._next_allowed_time:
+                sleep_for = self._next_allowed_time - now
+                self._next_allowed_time += self.request_delay
+            else:
+                self._next_allowed_time = now + self.request_delay
+            self.last_request_time = self._next_allowed_time
+        if sleep_for > 0:
+            time.sleep(sleep_for)
 
     def fetch_html(self, url: str, max_retries: int = 2) -> Optional[str]:
         self._wait_for_rate_limit()
+        last_status: Optional[int] = None
+        last_error: Optional[str] = None
 
         for attempt in range(max_retries + 1):
             try:
@@ -41,30 +54,57 @@ class SourceClient:
                     }
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    last_status = resp.status
+                    final_url = resp.geturl()
                     if resp.status == 200:
                         content_bytes = resp.read()
+                        self.last_fetch_meta = {
+                            "status_code": 200,
+                            "requested_url": url,
+                            "final_url": final_url,
+                            "error": None,
+                        }
                         # Decode utf-8 safely
                         return content_bytes.decode("utf-8", errors="ignore")
+                    last_error = f"HTTP {resp.status}"
                     logger.warning(f"Unexpected HTTP status {resp.status} for {url}")
             except urllib.error.HTTPError as e:
+                last_status = e.code
+                last_error = f"HTTP {e.code}: {e.reason}"
                 logger.warning(f"HTTPError {e.code} fetching {url}: {e.reason}")
                 if e.code in (429, 503):
                     time.sleep(2.0 * (attempt + 1))
-                elif e.code in (404, 403):
+                elif e.code in (404, 403, 410):
+                    self.last_fetch_meta = {
+                        "status_code": e.code,
+                        "requested_url": url,
+                        "final_url": getattr(e, "url", url),
+                        "error": last_error,
+                    }
                     return None
             except Exception as e:
+                last_error = str(e)
                 logger.warning(f"Attempt {attempt + 1} failed fetching {url}: {e}")
-                time.sleep(1.0 * (attempt + 1))
+                if attempt < max_retries:
+                    time.sleep(1.0 * (attempt + 1))
 
+        self.last_fetch_meta = {
+            "status_code": last_status,
+            "requested_url": url,
+            "final_url": None,
+            "error": last_error,
+        }
         return None
 
     def fetch_homepage(self) -> Optional[str]:
-        return self.fetch_html(self.BASE_URL)
+        return self.fetch_html(f"{self.BASE_URL}/")
 
-    def fetch_page(self, page_number: int) -> Optional[str]:
+    def fetch_page(self, page_number: int, page_url: Optional[str] = None) -> Optional[str]:
+        if page_url:
+            return self.fetch_html(page_url)
         if page_number <= 1:
             return self.fetch_homepage()
-        return self.fetch_html(f"{self.BASE_URL}/page/{page_number}/")
+        return self.fetch_html(f"{self.BASE_URL}/page/{page_number}")
 
     def fetch_album_page(self, album_url: str) -> Optional[str]:
         return self.fetch_html(album_url)

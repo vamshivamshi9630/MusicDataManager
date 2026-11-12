@@ -1,6 +1,7 @@
 import time
 import logging
-from typing import Dict, Any, Optional, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, Optional, List, Tuple
 from backend.core.config import settings
 from backend.services.latest_releases.models import (
     NotificationType,
@@ -22,16 +23,42 @@ class LatestReleasesDiscoveryEngine:
     """
     Main orchestration engine for Latest Releases Discovery.
     Safe, rate-limited, distributed-lock protected, and database backed.
-    Supports 15-20 page paginated discovery, language differentiation, and live reconciliation.
+    Supports 20-page paginated discovery, language differentiation, and live reconciliation.
     """
 
     def __init__(self, db: Optional[LatestReleasesDB] = None, source_client: Optional[SourceClient] = None):
         self.db = db or get_latest_releases_db()
         self.source_client = source_client or SourceClient()
 
+    def _is_real_source_client(self) -> bool:
+        return (
+            isinstance(self.source_client, SourceClient)
+            and type(self.source_client) is SourceClient
+            and "fetch_page" not in self.source_client.__dict__
+            and "fetch_album_page" not in self.source_client.__dict__
+            and "fetch_html" not in self.source_client.__dict__
+        )
+
+    def _fetch_and_parse_album(self, cand: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[DiscoveredAlbum], Optional[Exception]]:
+        album_url = cand.get("url")
+        if not album_url:
+            return cand, None, None
+        try:
+            album_html = self.source_client.fetch_album_page(album_url)
+            if not album_html:
+                return cand, None, None
+            discovered = AlbumParser.parse_album_page(album_html, album_url)
+            if not discovered or not discovered.album_name:
+                return cand, None, None
+            if not discovered.artwork_url and cand.get("thumbnail"):
+                discovered.artwork_url = cand.get("thumbnail")
+            return cand, discovered, None
+        except Exception as err:
+            return cand, None, err
+
     def run_scan(self, locked_by: str = "cron", max_pages: Optional[int] = None, limit_albums: Optional[int] = None) -> Dict[str, Any]:
         """
-        Executes a complete discovery scan against naasongs.com.co across paginated indexes (pages 1 to 20).
+        Executes a complete discovery scan against naasongs.com.co across paginated indexes (up to max_pages=20).
         Protected by database-backed distributed lock.
         """
         # 1. Acquire Distributed Scan Lock
@@ -47,28 +74,43 @@ class LatestReleasesDiscoveryEngine:
 
         scan_id = self.db.record_scan_start(locked_by=locked_by)
         start_time = time.time()
-        albums_found_count = 0
+        albums_discovered = 0
+        albums_inspected = 0
         new_albums_count = 0
         new_songs_count = 0
-        pages_checked = 0
+        pages_requested = 0
+        pages_successfully_checked = 0
+        pages_unavailable = 0
         resolved_count = 0
         failed_pages: List[str] = []
         scan_error = None
 
-        pages_limit = max_pages or getattr(settings, "LATEST_RELEASES_MAX_PAGES", 20)
+        pages_limit = max_pages if (max_pages is not None and max_pages > 0) else getattr(settings, "LATEST_RELEASES_MAX_PAGES", 20)
+        is_real_client = self._is_real_source_client()
 
         try:
-            logger.info(f"[DISCOVERY] Scan #{scan_id} initiated by '{locked_by}' (target up to {pages_limit} pages)...")
+            logger.info(f"[DISCOVERY] Scan #{scan_id} initiated by '{locked_by}' (max_pages={pages_limit}, limit_albums={limit_albums})...")
 
             # 2. Paginated crawl of candidate album links
             seen_urls = set()
             all_candidates: List[Dict[str, Any]] = []
+            next_page_url: Optional[str] = None
+            known_last_page: Optional[int] = None
+            consecutive_failures = 0
 
             for page_num in range(1, pages_limit + 1):
-                pages_checked += 1
+                pages_requested += 1
                 try:
-                    page_html = self.source_client.fetch_page(page_num)
+                    target_url = next_page_url if (is_real_client and page_num > 1 and next_page_url) else None
+                    if is_real_client and target_url:
+                        page_html = self.source_client.fetch_page(page_num, page_url=target_url)
+                    else:
+                        page_html = self.source_client.fetch_page(page_num)
+
                     if not page_html:
+                        pages_unavailable += 1
+                        failed_pages.append(f"page/{page_num}")
+                        consecutive_failures += 1
                         if page_num == 1:
                             scan_error = "Could not fetch naasongs.com.co homepage (timeout or unreachable)."
                             logger.error(f"[DISCOVERY] {scan_error}")
@@ -76,17 +118,49 @@ class LatestReleasesDiscoveryEngine:
                                 "success": False,
                                 "status": "FAILED",
                                 "error": scan_error,
-                                "scan_id": scan_id
+                                "scan_id": scan_id,
+                                "pages_requested": pages_requested,
+                                "pages_successfully_checked": pages_successfully_checked,
+                                "pages_unavailable": pages_unavailable,
+                                "pages_checked": pages_successfully_checked,
+                                "albums_discovered": albums_discovered,
+                                "albums_inspected": albums_inspected,
+                                "albums_found": albums_discovered,
                             }
-                        else:
-                            # Reached end of pagination (e.g. 404 on page 18)
-                            logger.info(f"[DISCOVERY] Reached end of pagination at page {page_num}.")
+
+                        fetch_meta = getattr(self.source_client, "last_fetch_meta", None)
+                        http_status = fetch_meta.get("status_code") if isinstance(fetch_meta, dict) else None
+                        if http_status in (404, 410):
+                            logger.info(f"[DISCOVERY] Reached end of pagination (HTTP {http_status}) at page {page_num}.")
                             break
+                        if known_last_page and page_num < known_last_page and consecutive_failures < 3:
+                            logger.warning(f"[DISCOVERY] Page {page_num} unavailable (known last page: {known_last_page}); advancing to next page.")
+                            next_page_url = None
+                            continue
+                        logger.info(f"[DISCOVERY] Pagination stopped at unavailable page {page_num}.")
+                        break
+
+                    used_url = target_url or (f"{SourceClient.BASE_URL}/" if page_num == 1 else f"{SourceClient.BASE_URL}/page/{page_num}")
+                    nav_info = AlbumParser.parse_pagination_info(page_html, current_url=used_url)
+
+                    # WordPress redirects out-of-range /page/N back to homepage (page 1)
+                    if page_num > 1 and nav_info.get("pagination_present") and nav_info.get("current_page") == 1:
+                        pages_unavailable += 1
+                        failed_pages.append(f"page/{page_num}")
+                        logger.info(f"[DISCOVERY] Page {page_num} redirected to page 1; reached end of pagination.")
+                        break
 
                     page_candidates = AlbumParser.parse_homepage_albums(page_html)
                     if not page_candidates:
+                        pages_unavailable += 1
+                        failed_pages.append(f"page/{page_num}")
                         logger.info(f"[DISCOVERY] No album links found on page {page_num}; stopping pagination.")
                         break
+
+                    consecutive_failures = 0
+                    pages_successfully_checked += 1
+                    known_last_page = nav_info.get("last_page_number") or known_last_page
+                    next_page_url = nav_info.get("next_page_url")
 
                     new_on_page = 0
                     for cand in page_candidates:
@@ -96,43 +170,68 @@ class LatestReleasesDiscoveryEngine:
                             all_candidates.append(cand)
                             new_on_page += 1
 
-                    logger.info(f"[DISCOVERY] Page {page_num}: found {len(page_candidates)} links ({new_on_page} new). Total candidates: {len(all_candidates)}")
+                    logger.info(
+                        f"[DISCOVERY] Page {page_num}: found {len(page_candidates)} links ({new_on_page} new). "
+                        f"Total discovered: {len(all_candidates)}"
+                    )
 
-                    if limit_albums and len(all_candidates) >= limit_albums:
+                    if limit_albums and limit_albums > 0 and len(all_candidates) >= limit_albums:
                         all_candidates = all_candidates[:limit_albums]
+                        logger.info(f"[DISCOVERY] Reached explicit limit_albums={limit_albums}; stopping page crawl.")
+                        break
+
+                    if nav_info.get("pagination_present") and nav_info.get("has_next") is False:
+                        logger.info(f"[DISCOVERY] Reached final source page ({page_num}); no next-page link.")
                         break
 
                 except Exception as page_err:
-                    logger.warning(f"[DISCOVERY] Error scraping page {page_num}: {page_err}")
+                    pages_unavailable += 1
                     failed_pages.append(f"page/{page_num}")
+                    consecutive_failures += 1
+                    next_page_url = None
+                    logger.warning(f"[DISCOVERY] Error scraping page {page_num}: {page_err}")
+                    if page_num == 1:
+                        scan_error = f"Error scraping homepage: {page_err}"
+                        return {
+                            "success": False,
+                            "status": "FAILED",
+                            "error": scan_error,
+                            "scan_id": scan_id,
+                            "pages_requested": pages_requested,
+                            "pages_successfully_checked": pages_successfully_checked,
+                            "pages_unavailable": pages_unavailable,
+                            "pages_checked": pages_successfully_checked,
+                            "albums_discovered": albums_discovered,
+                            "albums_inspected": albums_inspected,
+                            "albums_found": albums_discovered,
+                        }
+                    if not (known_last_page and page_num < known_last_page and consecutive_failures < 3):
+                        break
 
-            albums_found_count = len(all_candidates)
+            albums_discovered = len(all_candidates)
             comparator = SongComparator()
-            processed_albums_count = 0
             album_error_count = 0
 
-            # 3. Process candidate albums
-            for cand in all_candidates:
+            # 3. Fetch & parse candidate albums (bounded concurrency for real HTTP client, sequential for mocks)
+            if is_real_client and albums_discovered > 1:
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    parsed_entries = list(executor.map(self._fetch_and_parse_album, all_candidates))
+            else:
+                parsed_entries = [self._fetch_and_parse_album(cand) for cand in all_candidates]
+
+            for cand, discovered, fetch_err in parsed_entries:
                 album_url = cand.get("url")
-                if not album_url:
+                if fetch_err is not None:
+                    album_error_count += 1
+                    logger.warning(f"Error processing album {album_url}: {fetch_err}")
+                    continue
+                if not discovered:
                     continue
 
                 try:
-                    album_html = self.source_client.fetch_album_page(album_url)
-                    if not album_html:
-                        continue
-
-                    discovered = AlbumParser.parse_album_page(album_html, album_url)
-                    if not discovered or not discovered.album_name:
-                        continue
-
-                    # If candidate has a thumbnail and discovered doesn't, inherit it
-                    if not discovered.artwork_url and cand.get("thumbnail"):
-                        discovered.artwork_url = cand.get("thumbnail")
-
                     # Run comparison against MusicData catalog (incorporates album language)
                     notif_type, analyzed = comparator.compare_album(discovered)
-                    processed_albums_count += 1
+                    albums_inspected += 1
 
                     # Save album and songs in DB
                     album_id = self.db.upsert_discovered_album(analyzed)
@@ -235,14 +334,22 @@ class LatestReleasesDiscoveryEngine:
                     album_error_count += 1
                     logger.warning(f"Error processing album {album_url}: {album_err}")
 
-            if albums_found_count > 0 and processed_albums_count == 0 and album_error_count > 0:
+            if albums_discovered > 0 and albums_inspected == 0 and album_error_count > 0:
                 scan_error = f"All {album_error_count} candidate album(s) failed during catalog comparison."
                 logger.error(f"[DISCOVERY] {scan_error}")
                 return {
                     "success": False,
                     "status": "FAILED",
                     "scan_id": scan_id,
-                    "error": scan_error
+                    "error": scan_error,
+                    "pages_requested": pages_requested,
+                    "pages_successfully_checked": pages_successfully_checked,
+                    "pages_unavailable": pages_unavailable,
+                    "pages_checked": pages_successfully_checked,
+                    "albums_discovered": albums_discovered,
+                    "albums_inspected": albums_inspected,
+                    "albums_found": albums_discovered,
+                    "failed_pages": failed_pages,
                 }
 
             # 4. Run Live Reconciliation post-scan
@@ -254,17 +361,28 @@ class LatestReleasesDiscoveryEngine:
                 logger.warning(f"[DISCOVERY] Post-scan reconciliation warning: {recon_err}")
 
             duration = round(time.time() - start_time, 2)
-            logger.info(f"[DISCOVERY] Scan completed in {duration}s: {albums_found_count} checked across {pages_checked} pages, {new_albums_count} new albums, {new_songs_count} new songs, {resolved_count} resolved.")
+            logger.info(
+                f"[DISCOVERY] Scan completed in {duration}s: "
+                f"pages(requested={pages_requested}, ok={pages_successfully_checked}, unavail={pages_unavailable}), "
+                f"albums(discovered={albums_discovered}, inspected={albums_inspected}), "
+                f"new_albums={new_albums_count}, new_songs={new_songs_count}, resolved={resolved_count}."
+            )
             return {
                 "success": True,
                 "status": "COMPLETED",
                 "scan_id": scan_id,
                 "duration_seconds": duration,
-                "pages_checked": pages_checked,
-                "albums_found": albums_found_count,
+                "pages_requested": pages_requested,
+                "pages_successfully_checked": pages_successfully_checked,
+                "pages_unavailable": pages_unavailable,
+                "pages_checked": pages_successfully_checked,
+                "albums_discovered": albums_discovered,
+                "albums_inspected": albums_inspected,
+                "albums_found": albums_discovered,
                 "new_albums_count": new_albums_count,
                 "new_songs_count": new_songs_count,
-                "resolved_notifications_count": resolved_count
+                "resolved_notifications_count": resolved_count,
+                "failed_pages": failed_pages,
             }
 
         except Exception as e:
@@ -274,16 +392,29 @@ class LatestReleasesDiscoveryEngine:
                 "success": False,
                 "status": "FAILED",
                 "scan_id": scan_id,
-                "error": scan_error
+                "error": scan_error,
+                "pages_requested": pages_requested,
+                "pages_successfully_checked": pages_successfully_checked,
+                "pages_unavailable": pages_unavailable,
+                "pages_checked": pages_successfully_checked,
+                "albums_discovered": albums_discovered,
+                "albums_inspected": albums_inspected,
+                "albums_found": albums_discovered,
+                "failed_pages": failed_pages,
             }
 
         finally:
             self.db.record_scan_complete(
                 scan_id=scan_id,
-                albums_found=albums_found_count,
+                albums_found=albums_discovered,
                 new_albums=new_albums_count,
                 new_songs=new_songs_count,
-                pages_checked=pages_checked,
+                pages_checked=pages_successfully_checked,
+                pages_requested=pages_requested,
+                pages_successfully_checked=pages_successfully_checked,
+                pages_unavailable=pages_unavailable,
+                albums_discovered=albums_discovered,
+                albums_inspected=albums_inspected,
                 resolved_notifications=resolved_count,
                 failed_pages=failed_pages,
                 error_message=scan_error
