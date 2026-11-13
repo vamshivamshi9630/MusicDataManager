@@ -1383,11 +1383,12 @@
         let currentEligibleNotifIds = [];
 
         function isNotificationSelectable(n) {
+            if (!n) return false;
             const eligibleTypes = ['NEW_ALBUM', 'NEW_SONG', 'MISSING_SONGS'];
             if (!eligibleTypes.includes(n.notification_type)) return false;
             if ((n.resolution_status || 'PENDING') === 'COMPLETED') return false;
-            const songs = n.songs || [];
-            return songs.some(s => !s.exists_in_catalog && s.source_audio_url && (s.download_authorized !== false) && (s.link_available !== false));
+            const songs = Array.isArray(n.songs) ? n.songs : [];
+            return songs.some(s => s && !s.exists_in_catalog && s.source_audio_url && (s.download_authorized !== false) && (s.link_available !== false));
         }
 
         function updateNotifSelectionUI() {
@@ -1436,7 +1437,7 @@
             const listContainer = document.getElementById('notification-list');
             currentEligibleNotifIds = [];
 
-            if (notifs.length === 0) {
+            if (!Array.isArray(notifs) || notifs.length === 0) {
                 listContainer.innerHTML = `
                     <div class="text-center py-10 px-4 bg-slate-950/40 rounded-xl border border-slate-800">
                         <i class="icon-check-circle text-2xl text-emerald-400 mb-2 block"></i>
@@ -1448,7 +1449,8 @@
                 return;
             }
 
-            const sortedNotifs = [...notifs].sort((a, b) => {
+            const validNotifs = notifs.filter(Boolean);
+            const sortedNotifs = [...validNotifs].sort((a, b) => {
                 const pageA = (a.source_page !== null && a.source_page !== undefined) ? Number(a.source_page) : Number.MAX_SAFE_INTEGER;
                 const pageB = (b.source_page !== null && b.source_page !== undefined) ? Number(b.source_page) : Number.MAX_SAFE_INTEGER;
                 if (pageA !== pageB) return pageA - pageB;
@@ -1473,214 +1475,251 @@
 
             let html = '';
             sortedNotifs.forEach(n => {
-                const selectable = isNotificationSelectable(n);
-                if (selectable) {
-                    currentEligibleNotifIds.push(Number(n.id));
-                }
-                const isSelected = selectable && selectedNotifIds.has(Number(n.id));
-                let badgeClass = 'bg-amber-900/40 text-amber-300 border-amber-800';
-                let typeLabel = (n.notification_type || 'NEW_ALBUM').replace('_', ' ');
-                if (n.notification_type === 'NEW_ALBUM') {
-                    badgeClass = 'bg-emerald-900/40 text-emerald-300 border-emerald-800';
-                } else if (n.notification_type === 'MISSING_SONGS') {
-                    badgeClass = 'bg-rose-900/40 text-rose-300 border-rose-800';
-                } else if (n.notification_type === 'ALBUM_UPDATED') {
-                    badgeClass = 'bg-sky-900/40 text-sky-300 border-sky-800';
-                } else if (n.notification_type === 'SCAN_FAILED') {
-                    badgeClass = 'bg-red-900/40 text-red-300 border-red-800';
-                }
+                try {
+                    const selectable = isNotificationSelectable(n);
+                    if (selectable) {
+                        currentEligibleNotifIds.push(Number(n.id));
+                    }
+                    const isSelected = selectable && selectedNotifIds.has(Number(n.id));
+                    let badgeClass = 'bg-amber-900/40 text-amber-300 border-amber-800';
+                    let typeLabel = (n.notification_type || 'NEW_ALBUM').replace('_', ' ');
+                    if (n.notification_type === 'NEW_ALBUM') {
+                        badgeClass = 'bg-emerald-900/40 text-emerald-300 border-emerald-800';
+                    } else if (n.notification_type === 'MISSING_SONGS') {
+                        badgeClass = 'bg-rose-900/40 text-rose-300 border-rose-800';
+                    } else if (n.notification_type === 'ALBUM_UPDATED') {
+                        badgeClass = 'bg-sky-900/40 text-sky-300 border-sky-800';
+                    } else if (n.notification_type === 'SCAN_FAILED') {
+                        badgeClass = 'bg-red-900/40 text-red-300 border-red-800';
+                    }
 
-                const lang = n.language || 'Telugu';
-                const langBadgeStyle = getLanguageBadgeStyles(lang);
+                    const lang = n.language || 'Telugu';
+                    const langBadgeStyle = getLanguageBadgeStyles(lang);
 
-                const cardBg = n.is_read ? 'bg-slate-950/40 border-slate-800 opacity-80' : 'bg-slate-950 border-slate-700/80 shadow-md';
-                const checkboxHtml = selectable
-                    ? `<input type="checkbox" class="notif-select-checkbox mt-1 w-4 h-4 rounded border-slate-600 bg-slate-900 text-brand-500 focus:ring-brand-500 cursor-pointer shrink-0" data-notif-id="${n.id}" ${isSelected ? 'checked' : ''} onchange="toggleNotifSelection(${n.id}, this.checked)" title="Select album for ADD TO MUSICDATA">`
-                    : `<span class="w-4 shrink-0"></span>`;
-                const artHtml = n.artwork_url
-                    ? `<img src="${n.artwork_url}" class="w-12 h-12 rounded-lg object-cover bg-slate-800 border border-slate-700 shrink-0" onerror="this.onerror=null;this.src='';this.className='hidden';">`
-                    : `<div class="w-12 h-12 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-500 shrink-0"><i class="icon-disc text-xl"></i></div>`;
+                    const cardBg = n.is_read ? 'bg-slate-950/40 border-slate-800 opacity-80' : 'bg-slate-950 border-slate-700/80 shadow-md';
+                    const checkboxHtml = selectable
+                        ? `<input type="checkbox" class="notif-select-checkbox mt-1 w-4 h-4 rounded border-slate-600 bg-slate-900 text-brand-500 focus:ring-brand-500 cursor-pointer shrink-0" data-notif-id="${n.id}" ${isSelected ? 'checked' : ''} onchange="toggleNotifSelection(${n.id}, this.checked)" title="Select album for ADD TO MUSICDATA">`
+                        : `<span class="w-4 shrink-0"></span>`;
+                    const artHtml = n.artwork_url
+                        ? `<img src="${escapeHtml(n.artwork_url)}" class="w-12 h-12 rounded-lg object-cover bg-slate-800 border border-slate-700 shrink-0" onerror="this.onerror=null;this.src='';this.className='hidden';">`
+                        : `<div class="w-12 h-12 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-500 shrink-0"><i class="icon-disc text-xl"></i></div>`;
 
-                let songsHtml = '';
-                const downloadableSongs = [];
-                if (n.songs && n.songs.length > 0) {
-                    const renderTrackRow = (s, sIdx) => {
+                    // Safely initialize groups at notification level
+                    const songs = Array.isArray(n.songs) ? n.songs.filter(Boolean) : [];
+                    const missingGroup = [];
+                    const verifyGroup = [];
+                    const existingGroup = [];
+                    const downloadableSongs = [];
+
+                    songs.forEach((s, idx) => {
                         const cls = s.match_classification || (s.exists_in_catalog ? 'EXACT_MATCH' : (s.match_confidence === 'UNCERTAIN' ? 'UNCERTAIN' : 'MISSING'));
                         const isVersionVerify = (cls === 'POSSIBLE_VERSION_MATCH');
                         const isUncertain = (cls === 'UNCERTAIN' || (!isVersionVerify && s.match_confidence === 'UNCERTAIN' && !s.exists_in_catalog));
                         const hasAuthorizedDl = Boolean(s.source_audio_url && (s.download_authorized !== false) && (s.link_available !== false));
 
-                        let statusBadge = '';
                         if (s.exists_in_catalog) {
-                            statusBadge = `<span class="text-[10px] bg-emerald-950/70 text-emerald-300 border border-emerald-800/70 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">✓ In MusicData</span>`;
-                        } else if (isVersionVerify) {
-                            statusBadge = `<span class="text-[10px] bg-amber-950/80 text-amber-300 border border-amber-700/80 px-1.5 py-0.5 rounded shrink-0">⚡ Version Match</span>`;
-                        } else if (isUncertain) {
-                            statusBadge = `<span class="text-[10px] bg-purple-900/50 text-purple-300 border border-purple-800 px-1.5 py-0.5 rounded shrink-0">⚠ Uncertain Match</span>`;
-                        } else {
-                            statusBadge = `<span class="text-[10px] bg-rose-950/60 text-rose-300 border border-rose-800/70 px-1.5 py-0.5 rounded font-medium shrink-0">★ Missing</span>`;
-                        }
-
-                        if (!s.exists_in_catalog && !isVersionVerify && !isUncertain && hasAuthorizedDl) {
-                            downloadableSongs.push({
-                                url: s.source_audio_url,
-                                title: s.song_title,
-                                trackNumber: s.track_number || (sIdx + 1),
-                                songId: s.id,
-                                language: lang
-                            });
-                        }
-
-                        let dlButtonHtml = '';
-                        if (s.exists_in_catalog) {
-                            dlButtonHtml = `<span class="text-[10px] text-emerald-400 font-medium">✓ In Catalog</span>`;
-                        } else if ((isVersionVerify || isUncertain) && hasAuthorizedDl) {
-                            dlButtonHtml = `
-                                <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url)}', '${encodeURIComponent(n.album_name)}', '${encodeURIComponent(s.song_title)}', ${s.track_number || (sIdx + 1)}, ${s.id || 0}, '${encodeURIComponent(lang)}')" class="text-[10px] text-amber-300 hover:text-amber-200 flex items-center gap-1 font-medium transition border border-amber-800/60 bg-amber-950/40 px-1.5 py-0.5 rounded" title="Verify version before downloading">
-                                    <span>Verify & Download</span>
-                                </button>
-                            `;
+                            existingGroup.push({ s, idx });
                         } else if (isVersionVerify || isUncertain) {
-                            dlButtonHtml = n.source_url
-                                ? `<a href="${escapeHtml(n.source_url)}" target="_blank" rel="noopener" class="text-[10px] text-purple-300 hover:text-purple-200 underline">Review Source ↗</a>`
-                                : `<span class="text-[10px] text-purple-400 font-medium">Review Match</span>`;
-                        } else if (hasAuthorizedDl) {
-                            dlButtonHtml = `
-                                <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url)}', '${encodeURIComponent(n.album_name)}', '${encodeURIComponent(s.song_title)}', ${s.track_number || (sIdx + 1)}, ${s.id || 0}, '${encodeURIComponent(lang)}')" class="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium transition" title="Download MP3">
-                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                                    <span>Download</span>
-                                </button>
-                            `;
-                        } else if (s.source_page_url || n.source_url) {
-                            dlButtonHtml = `<span class="text-[10px] text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/80 font-medium" title="Audio download stream unavailable on source">Download unavailable</span>`;
+                            verifyGroup.push({ s, idx });
                         } else {
-                            dlButtonHtml = `<span class="text-[10px] text-slate-500 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/80 font-medium">Download unavailable</span>`;
+                            missingGroup.push({ s, idx });
+                            if (hasAuthorizedDl) {
+                                downloadableSongs.push({
+                                    url: s.source_audio_url,
+                                    title: s.song_title || 'Untitled Song',
+                                    trackNumber: s.track_number || (idx + 1),
+                                    songId: s.id,
+                                    language: lang
+                                });
+                            }
                         }
-
-                        const metaParts = [];
-                        if (s.singer) metaParts.push(`🎤 ${escapeHtml(s.singer)}`);
-                        if (s.available_bitrate) metaParts.push(`<span class="text-cyan-400/90">${escapeHtml(s.available_bitrate)}</span>`);
-                        if ((isVersionVerify || isUncertain) && s.catalog_song_title) {
-                            metaParts.push(`<span class="text-amber-300/90">Catalog: "${escapeHtml(s.catalog_song_title)}"</span>`);
-                        }
-                        const metaLine = metaParts.length > 0 ? `<div class="text-[10px] text-slate-400 truncate mt-0.5 pl-5">${metaParts.join(' • ')}</div>` : '';
-
-                        return `
-                            <div class="py-1.5 px-2 rounded hover:bg-slate-900/60 transition">
-                                <div class="flex items-center justify-between text-xs gap-2">
-                                    <span class="text-slate-200 truncate max-w-[240px] sm:max-w-xs">
-                                        <span class="text-slate-500 font-mono mr-1">${String(s.track_number || (sIdx + 1)).padStart(2, '0')}.</span>${escapeHtml(s.song_title)}
-                                    </span>
-                                    <div class="flex items-center space-x-2 shrink-0">
-                                        ${statusBadge}
-                                        ${dlButtonHtml}
-                                    </div>
-                                </div>
-                                ${metaLine}
-                            </div>
-                        `;
-                    };
-
-                    const missingGroup = [];
-                    const verifyGroup = [];
-                    const existingGroup = [];
-                    n.songs.forEach((s, idx) => {
-                        const cls = s.match_classification || (s.exists_in_catalog ? 'EXACT_MATCH' : (s.match_confidence === 'UNCERTAIN' ? 'UNCERTAIN' : 'MISSING'));
-                        if (s.exists_in_catalog) existingGroup.push({ s, idx });
-                        else if (cls === 'POSSIBLE_VERSION_MATCH' || cls === 'UNCERTAIN' || s.match_confidence === 'UNCERTAIN') verifyGroup.push({ s, idx });
-                        else missingGroup.push({ s, idx });
                     });
 
-                    songsHtml = `<div class="mt-2.5 pt-2 border-t border-slate-800/80 space-y-2">`;
-                    if (missingGroup.length > 0) {
-                        songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-rose-400/90 px-2 mb-0.5">Missing Tracks (${missingGroup.length})</p>`;
-                        songsHtml += missingGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
-                        songsHtml += `</div>`;
-                    }
-                    if (verifyGroup.length > 0) {
-                        songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-amber-400/90 px-2 mb-0.5">Version Verification Needed (${verifyGroup.length})</p>`;
-                        songsHtml += verifyGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
-                        songsHtml += `</div>`;
-                    }
-                    if (existingGroup.length > 0) {
-                        songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-emerald-400/90 px-2 mb-0.5">Existing in MusicData (${existingGroup.length})</p>`;
-                        songsHtml += existingGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
-                        songsHtml += `</div>`;
-                    }
-                    songsHtml += `</div>`;
-                }
+                    let songsHtml = '';
+                    if (songs.length > 0) {
+                        const renderTrackRow = (s, sIdx) => {
+                            const cls = s.match_classification || (s.exists_in_catalog ? 'EXACT_MATCH' : (s.match_confidence === 'UNCERTAIN' ? 'UNCERTAIN' : 'MISSING'));
+                            const isVersionVerify = (cls === 'POSSIBLE_VERSION_MATCH');
+                            const isUncertain = (cls === 'UNCERTAIN' || (!isVersionVerify && s.match_confidence === 'UNCERTAIN' && !s.exists_in_catalog));
+                            const hasAuthorizedDl = Boolean(s.source_audio_url && (s.download_authorized !== false) && (s.link_available !== false));
 
-                // Batch Download Button (Left side)
-                const missingCount = downloadableSongs.length;
-                let batchDlBtnHtml = '';
-                if (missingCount > 0) {
-                    const dlPayload = encodeURIComponent(JSON.stringify({
-                        albumName: n.album_name,
-                        tracks: downloadableSongs
-                    }));
-                    batchDlBtnHtml = `
-                        <button type="button" onclick="startBatchDownload('${dlPayload}')" class="px-3 py-1.5 bg-cyan-700/80 hover:bg-cyan-600 text-cyan-100 rounded-lg text-xs font-bold transition flex items-center gap-1.5 border border-cyan-500/40 shadow-sm">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                            <span>⬇ Download All (${missingCount})</span>
-                        </button>
-                    `;
-                } else if (missingGroup.length === 0 && verifyGroup.length === 0) {
-                    batchDlBtnHtml = `
-                        <span class="text-xs text-emerald-400 flex items-center gap-1 font-medium">
-                            <i class="icon-check text-emerald-400"></i> All songs in MusicData
-                        </span>
-                    `;
-                } else if (missingGroup.length > 0 && verifyGroup.length === 0) {
-                    batchDlBtnHtml = `
-                        <span class="text-xs text-amber-400/90 flex items-center gap-1 font-medium" title="Missing songs do not have downloadable audio URLs on source">
-                            <i class="icon-alert-triangle text-amber-400"></i> Download unavailable on source
-                        </span>
-                    `;
-                } else {
-                    batchDlBtnHtml = `
-                        <span class="text-xs text-amber-300 flex items-center gap-1 font-medium" title="Tracks require version verification before downloading">
-                            <i class="icon-help-circle text-amber-300"></i> Version verification needed
-                        </span>
-                    `;
-                }
+                            let statusBadge = '';
+                            if (s.exists_in_catalog) {
+                                statusBadge = `<span class="text-[10px] bg-emerald-950/70 text-emerald-300 border border-emerald-800/70 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">✓ In MusicData</span>`;
+                            } else if (isVersionVerify) {
+                                statusBadge = `<span class="text-[10px] bg-amber-950/80 text-amber-300 border border-amber-700/80 px-1.5 py-0.5 rounded shrink-0">⚡ Version Match</span>`;
+                            } else if (isUncertain) {
+                                statusBadge = `<span class="text-[10px] bg-purple-900/50 text-purple-300 border border-purple-800 px-1.5 py-0.5 rounded shrink-0">⚠ Uncertain Match</span>`;
+                            } else {
+                                statusBadge = `<span class="text-[10px] bg-rose-950/60 text-rose-300 border border-rose-800/70 px-1.5 py-0.5 rounded font-medium shrink-0">★ Missing</span>`;
+                            }
 
-                html += `
-                    <div class="p-3.5 rounded-xl border ${cardBg} transition space-y-2">
-                        <div class="flex items-start justify-between gap-3">
-                            <div class="flex items-start space-x-3">
-                                ${checkboxHtml}
-                                ${artHtml}
-                                <div>
-                                    <div class="flex items-center gap-2 flex-wrap">
-                                        <h4 class="font-bold text-sm sm:text-base text-white leading-snug">${n.album_name}</h4>
-                                        <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded border ${langBadgeStyle}">${lang}</span>
-                                        <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${badgeClass}">${typeLabel}</span>
+                            let dlButtonHtml = '';
+                            if (s.exists_in_catalog) {
+                                dlButtonHtml = `<span class="text-[10px] text-emerald-400 font-medium">✓ In Catalog</span>`;
+                            } else if ((isVersionVerify || isUncertain) && hasAuthorizedDl) {
+                                dlButtonHtml = `
+                                    <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url || '')}', '${encodeURIComponent(n.album_name || '')}', '${encodeURIComponent(s.song_title || '')}', ${s.track_number || (sIdx + 1)}, ${s.id || 0}, '${encodeURIComponent(lang)}')" class="text-[10px] text-amber-300 hover:text-amber-200 flex items-center gap-1 font-medium transition border border-amber-800/60 bg-amber-950/40 px-1.5 py-0.5 rounded" title="Verify version before downloading">
+                                        <span>Verify & Download</span>
+                                    </button>
+                                `;
+                            } else if (isVersionVerify || isUncertain) {
+                                dlButtonHtml = n.source_url
+                                    ? `<a href="${escapeHtml(n.source_url)}" target="_blank" rel="noopener" class="text-[10px] text-purple-300 hover:text-purple-200 underline">Review Source ↗</a>`
+                                    : `<span class="text-[10px] text-purple-400 font-medium">Review Match</span>`;
+                            } else if (hasAuthorizedDl) {
+                                dlButtonHtml = `
+                                    <button type="button" onclick="downloadSingleTrack('${encodeURIComponent(s.source_audio_url || '')}', '${encodeURIComponent(n.album_name || '')}', '${encodeURIComponent(s.song_title || '')}', ${s.track_number || (sIdx + 1)}, ${s.id || 0}, '${encodeURIComponent(lang)}')" class="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-medium transition" title="Download MP3">
+                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                        <span>Download</span>
+                                    </button>
+                                `;
+                            } else if (s.source_page_url || n.source_url) {
+                                dlButtonHtml = `<span class="text-[10px] text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/80 font-medium" title="Audio download stream unavailable on source">Download unavailable</span>`;
+                            } else {
+                                dlButtonHtml = `<span class="text-[10px] text-slate-500 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/80 font-medium">Download unavailable</span>`;
+                            }
+
+                            const metaParts = [];
+                            if (s.singer) metaParts.push(`🎤 ${escapeHtml(s.singer)}`);
+                            if (s.available_bitrate) metaParts.push(`<span class="text-cyan-400/90">${escapeHtml(s.available_bitrate)}</span>`);
+                            if ((isVersionVerify || isUncertain) && s.catalog_song_title) {
+                                metaParts.push(`<span class="text-amber-300/90">Catalog: "${escapeHtml(s.catalog_song_title)}"</span>`);
+                            }
+                            const metaLine = metaParts.length > 0 ? `<div class="text-[10px] text-slate-400 truncate mt-0.5 pl-5">${metaParts.join(' • ')}</div>` : '';
+
+                            return `
+                                <div class="py-1.5 px-2 rounded hover:bg-slate-900/60 transition">
+                                    <div class="flex items-center justify-between text-xs gap-2">
+                                        <span class="text-slate-200 truncate max-w-[240px] sm:max-w-xs">
+                                            <span class="text-slate-500 font-mono mr-1">${String(s.track_number || (sIdx + 1)).padStart(2, '0')}.</span>${escapeHtml(s.song_title || 'Untitled Track')}
+                                        </span>
+                                        <div class="flex items-center space-x-2 shrink-0">
+                                            ${statusBadge}
+                                            ${dlButtonHtml}
+                                        </div>
                                     </div>
-                                    <p class="text-xs text-slate-400 mt-0.5">
-                                        Director: <span class="text-slate-300">${n.music_director || 'Unknown'}</span> • Year: <span class="text-slate-300">${n.year || 2026}</span>
-                                    </p>
-                                    <p class="text-xs text-slate-300 mt-1">${n.message}</p>
+                                    ${metaLine}
+                                </div>
+                            `;
+                        };
+
+                        songsHtml = `<div class="mt-2.5 pt-2 border-t border-slate-800/80 space-y-2">`;
+                        if (missingGroup.length > 0) {
+                            songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-rose-400/90 px-2 mb-0.5">Missing Tracks (${missingGroup.length})</p>`;
+                            songsHtml += missingGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
+                            songsHtml += `</div>`;
+                        }
+                        if (verifyGroup.length > 0) {
+                            songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-amber-400/90 px-2 mb-0.5">Version Verification Needed (${verifyGroup.length})</p>`;
+                            songsHtml += verifyGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
+                            songsHtml += `</div>`;
+                        }
+                        if (existingGroup.length > 0) {
+                            songsHtml += `<div><p class="text-[10px] font-bold uppercase tracking-wider text-emerald-400/90 px-2 mb-0.5">Existing in MusicData (${existingGroup.length})</p>`;
+                            songsHtml += existingGroup.map(x => renderTrackRow(x.s, x.idx)).join('');
+                            songsHtml += `</div>`;
+                        }
+                        songsHtml += `</div>`;
+                    }
+
+                    // Batch Download Button (Left side)
+                    const missingCount = downloadableSongs.length;
+                    let batchDlBtnHtml = '';
+                    if (missingCount > 0) {
+                        const dlPayload = encodeURIComponent(JSON.stringify({
+                            albumName: n.album_name || '',
+                            tracks: downloadableSongs
+                        }));
+                        batchDlBtnHtml = `
+                            <button type="button" onclick="startBatchDownload('${dlPayload}')" class="px-3 py-1.5 bg-cyan-700/80 hover:bg-cyan-600 text-cyan-100 rounded-lg text-xs font-bold transition flex items-center gap-1.5 border border-cyan-500/40 shadow-sm">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                <span>⬇ Download All (${missingCount})</span>
+                            </button>
+                        `;
+                    } else if (songs.length === 0) {
+                        if (n.notification_type === 'SCAN_FAILED') {
+                            batchDlBtnHtml = `
+                                <span class="text-xs text-rose-400 flex items-center gap-1 font-medium">
+                                    <i class="icon-alert-triangle text-rose-400"></i> Scan failed on source
+                                </span>
+                            `;
+                        } else {
+                            batchDlBtnHtml = `
+                                <span class="text-xs text-slate-500 flex items-center gap-1 font-medium">
+                                    <i class="icon-disc text-slate-500"></i> No tracks available
+                                </span>
+                            `;
+                        }
+                    } else if (missingGroup.length === 0 && verifyGroup.length === 0) {
+                        batchDlBtnHtml = `
+                            <span class="text-xs text-emerald-400 flex items-center gap-1 font-medium">
+                                <i class="icon-check text-emerald-400"></i> All songs in MusicData
+                            </span>
+                        `;
+                    } else if (missingGroup.length > 0 && verifyGroup.length === 0) {
+                        batchDlBtnHtml = `
+                            <span class="text-xs text-amber-400/90 flex items-center gap-1 font-medium" title="Missing songs do not have downloadable audio URLs on source">
+                                <i class="icon-alert-triangle text-amber-400"></i> Download unavailable on source
+                            </span>
+                        `;
+                    } else {
+                        batchDlBtnHtml = `
+                            <span class="text-xs text-amber-300 flex items-center gap-1 font-medium" title="Tracks require version verification before downloading">
+                                <i class="icon-help-circle text-amber-300"></i> Version verification needed
+                            </span>
+                        `;
+                    }
+
+                    html += `
+                        <div class="p-3.5 rounded-xl border ${cardBg} transition space-y-2">
+                            <div class="flex items-start justify-between gap-3">
+                                <div class="flex items-start space-x-3">
+                                    ${checkboxHtml}
+                                    ${artHtml}
+                                    <div>
+                                        <div class="flex items-center gap-2 flex-wrap">
+                                            <h4 class="font-bold text-sm sm:text-base text-white leading-snug">${escapeHtml(n.album_name || 'Untitled Album')}</h4>
+                                            <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded border ${langBadgeStyle}">${escapeHtml(lang)}</span>
+                                            <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${badgeClass}">${escapeHtml(typeLabel)}</span>
+                                        </div>
+                                        <p class="text-xs text-slate-400 mt-0.5">
+                                            Director: <span class="text-slate-300">${escapeHtml(n.music_director || 'Unknown')}</span> • Year: <span class="text-slate-300">${escapeHtml(String(n.year || 2026))}</span>
+                                        </p>
+                                        <p class="text-xs text-slate-300 mt-1">${escapeHtml(n.message || '')}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            ${songsHtml}
+
+                            <!-- Action Bar: Download All on LEFT, Add/Edit on RIGHT -->
+                            <div class="pt-2.5 flex items-center justify-between border-t border-slate-800/80 text-xs gap-2">
+                                <div>
+                                    ${batchDlBtnHtml}
+                                </div>
+                                <div class="flex items-center space-x-2 shrink-0">
+                                    ${n.source_url ? `<a href="${escapeHtml(n.source_url)}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-slate-300 underline hidden sm:inline mr-1">Source ↗</a>` : ''}
+                                    <button type="button" onclick="fillFormFromNotification('${encodeURIComponent(n.album_name || '')}', '${encodeURIComponent(n.music_director || '')}', ${n.year || 2026}, '${encodeURIComponent(n.notification_type || 'NEW_ALBUM')}', '${encodeURIComponent(lang)}')" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-bold transition border border-brand-500 shadow-sm flex items-center gap-1">
+                                        ${n.notification_type === 'NEW_ALBUM' ? '+ Add Album' : '✎ Edit in Manager'}
+                                    </button>
+                                    ${!n.is_read ? `<button type="button" onclick="markNotificationRead(${n.id})" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition">Mark Read</button>` : ''}
                                 </div>
                             </div>
                         </div>
-
-                        ${songsHtml}
-
-                        <!-- Action Bar: Download All on LEFT, Add/Edit on RIGHT -->
-                        <div class="pt-2.5 flex items-center justify-between border-t border-slate-800/80 text-xs gap-2">
+                    `;
+                } catch (cardErr) {
+                    console.error(`Error rendering notification card for ID ${n?.id}:`, cardErr);
+                    html += `
+                        <div class="p-3.5 rounded-xl border border-rose-900/50 bg-slate-950 text-xs text-rose-300 flex items-center justify-between gap-3">
                             <div>
-                                ${batchDlBtnHtml}
+                                <p class="font-bold text-white">${escapeHtml(n?.album_name || 'Corrupted Notification')}</p>
+                                <p class="text-rose-400 mt-0.5">Could not display notification details (Format Error). Other notifications unaffected.</p>
                             </div>
-                            <div class="flex items-center space-x-2 shrink-0">
-                                ${n.source_url ? `<a href="${n.source_url}" target="_blank" rel="noopener" class="text-xs text-slate-400 hover:text-slate-300 underline hidden sm:inline mr-1">Source ↗</a>` : ''}
-                                <button type="button" onclick="fillFormFromNotification('${encodeURIComponent(n.album_name)}', '${encodeURIComponent(n.music_director || '')}', ${n.year || 2026}, '${n.notification_type}', '${encodeURIComponent(lang)}')" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-bold transition border border-brand-500 shadow-sm flex items-center gap-1">
-                                    ${n.notification_type === 'NEW_ALBUM' ? '+ Add Album' : '✎ Edit in Manager'}
-                                </button>
-                                ${!n.is_read ? `<button type="button" onclick="markNotificationRead(${n.id})" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition">Mark Read</button>` : ''}
-                            </div>
+                            <span class="text-[10px] text-slate-500 font-mono">ID: ${escapeHtml(String(n?.id || 'N/A'))}</span>
                         </div>
-                    </div>
-                `;
+                    `;
+                }
             });
 
             listContainer.innerHTML = html;
