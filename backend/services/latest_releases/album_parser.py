@@ -111,6 +111,21 @@ class AlbumParser:
         return text
 
     @classmethod
+    def _clean_meta_field(cls, raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        text = html.unescape(raw).replace("\xa0", " ").strip()
+        # Cut off cleanly at any subsequent label token (e.g. Music:-, Lyrics:-, Singers:-, Year:-, etc.)
+        parts = re.split(
+            r'\s*(?:Music(?:\s+Director)?|Lyrics|Singers?|Artists?|Vocals?|Language|Year|Cast(?:\s+Crew)?|Starring|Director|Movie\s*(?:Title|Name)?|Album\s*(?:Title|Name)?|Audio\s+Quality|Track\s+List|Song\s+Name)\s*[:-]',
+            text,
+            flags=re.IGNORECASE
+        )
+        first_segment = parts[0].strip()
+        first_segment = re.sub(r'[\-_:\.\s]+$', '', first_segment).strip()
+        return first_segment if first_segment else None
+
+    @classmethod
     def extract_language_and_clean_title(
         cls,
         html_content: str,
@@ -546,14 +561,23 @@ class AlbumParser:
 
         # 1. Movie / Album Name
         raw_album_name = None
-        title_meta = re.search(r'Movie\s+(?:Title|Name)\s*:-\s*([^\n\r<]+)', content_text, re.IGNORECASE)
+        # Check Movie / Album Title/Name metadata in content text and raw HTML
+        title_meta = re.search(r'(?:Movie|Album)\s*(?:Title|Name)\s*:-\s*([^\n\r<]+)', content_text, re.IGNORECASE)
         if not title_meta:
-            title_meta = re.search(r'Movie\s+(?:Title|Name):-\s*([^<\n\r]+)', html_content, re.IGNORECASE)
+            title_meta = re.search(r'(?:Movie|Album)\s*(?:Title|Name):-\s*([^<\n\r]+)', html_content, re.IGNORECASE)
         if title_meta:
-            raw_album_name = html.unescape(title_meta.group(1)).strip()
+            raw_album_name = cls._clean_meta_field(title_meta.group(1))
+
+        # Check if single-song post slug indicates parent movie: e.g. /<song>-song-<movie>.html
+        m_single_slug = re.search(r'([a-z0-9\-]+)-song-([a-z0-9\-]+)\.html', source_url.lower())
+        if not raw_album_name and m_single_slug:
+            raw_album_name = m_single_slug.group(2).replace("-", " ").title()
 
         if not raw_album_name and h1_text:
-            raw_album_name = h1_text
+            if m_single_slug:
+                raw_album_name = m_single_slug.group(2).replace("-", " ").title()
+            else:
+                raw_album_name = h1_text
 
         if not raw_album_name:
             slug = source_url.split("/")[-1].replace(".html", "")
@@ -572,9 +596,11 @@ class AlbumParser:
         if not music_meta:
             music_meta = re.search(r'Music:-\s*([^<\n\r]+)', html_content, re.IGNORECASE)
         if music_meta:
-            clean_music = html.unescape(music_meta.group(1)).strip()
+            clean_music = cls._clean_meta_field(music_meta.group(1))
             if clean_music and clean_music != "-":
-                music_director = clean_music
+                # Reject if music_director accidentally captured singer/artist/lyrics label
+                if not re.match(r'^(?:singers?|artists?|lyrics|cast|director|year|language)\b', clean_music, re.IGNORECASE):
+                    music_director = clean_music
 
         # 3. Release Year
         year = 2026
@@ -591,12 +617,12 @@ class AlbumParser:
         director = None
         dir_meta = re.search(r'Director\s*:-\s*([^\n\r<]+)', content_text, re.IGNORECASE)
         if dir_meta:
-            director = html.unescape(dir_meta.group(1)).strip()
+            director = cls._clean_meta_field(dir_meta.group(1))
 
         cast_crew = None
-        cast_meta = re.search(r'Cast\s+Crew\s*:-\s*([^\n\r<]+)', content_text, re.IGNORECASE)
+        cast_meta = re.search(r'Cast(?:\s+Crew)?\s*:-\s*([^\n\r<]+)', content_text, re.IGNORECASE)
         if cast_meta:
-            cast_crew = html.unescape(cast_meta.group(1)).strip()
+            cast_crew = cls._clean_meta_field(cast_meta.group(1))
 
         # 5. Artwork Image URL (scoped inside main content, fallback og:image)
         artwork_url = None

@@ -28,11 +28,41 @@ class GeneratorService:
             try:
                 with open(stats_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    metrics["total_albums"] = data.get("totalAlbums", 0)
-                    metrics["total_songs"] = data.get("totalSongs", 0)
-                    return metrics
+                    metrics["total_albums"] = int(data.get("totalAlbums", 0))
+                    metrics["total_songs"] = int(data.get("totalSongs", 0))
+                    if metrics["total_songs"] > 0:
+                        return metrics
             except Exception:
                 pass
+
+        albums_idx_file = self.repo.indexes_dir / "albums.json"
+        if albums_idx_file.exists():
+            try:
+                with open(albums_idx_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list) and data:
+                        metrics["total_albums"] = len(data)
+                        metrics["total_songs"] = sum(int(a.get("songCount", 0)) for a in data)
+                        if metrics["total_songs"] > 0:
+                            return metrics
+            except Exception:
+                pass
+
+        if self.repo.albums_dir.exists():
+            album_files = list(self.repo.albums_dir.rglob("*.json"))
+            if album_files:
+                metrics["total_albums"] = len(album_files)
+                tot = 0
+                for af in album_files:
+                    try:
+                        with open(af, "r", encoding="utf-8") as f:
+                            c = json.load(f)
+                            tot += len(c.get("songs", []))
+                    except Exception:
+                        pass
+                metrics["total_songs"] = tot
+                if metrics["total_songs"] > 0:
+                    return metrics
 
         albums = self.repo.list_all_album_directories()
         metrics["total_albums"] = len(albums)
@@ -139,45 +169,79 @@ def scan_all_albums() -> List[Dict]:
     scanned_albums = []
     scanned_names = set()
 
+    # Pre-index all cached metadata albums so updating an existing album never loses prior tracks
+    cached_albums_map = {}
+    metadata_albums_dir = BASE_PATH / "metadata" / "albums"
+    if metadata_albums_dir.exists():
+        for json_file in metadata_albums_dir.rglob("*.json"):
+            stem_low = json_file.stem.lower()
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                cached_albums_map[stem_low] = (json_file, cdata)
+            except Exception:
+                pass
+
     for d in disk_dirs:
         data = scan_album_directory(d)
         if data:
+            d_lower = d.name.lower()
+            # If this album was already present in metadata cache, merge existing songs!
+            if d_lower in cached_albums_map:
+                _, cached_data = cached_albums_map[d_lower]
+                cached_songs = cached_data.get("songs", [])
+                disk_mp3_map = {f.name.lower(): f for f in data["mp3_files"]}
+                merged_files = []
+                seen_audio = set()
+                # 1. Preserve all cached songs, preferring real files from disk when present
+                for s in cached_songs:
+                    s_audio = s.get("audio") or f"{s.get('title')}.mp3"
+                    s_low = s_audio.lower()
+                    if s_low in disk_mp3_map:
+                        merged_files.append(disk_mp3_map[s_low])
+                    else:
+                        merged_files.append(DummyMp3Path(s_audio, d))
+                    seen_audio.add(s_low)
+                # 2. Add any newly added files on disk not present in cache
+                for f in data["mp3_files"]:
+                    if f.name.lower() not in seen_audio:
+                        merged_files.append(f)
+                        seen_audio.add(f.name.lower())
+                data["mp3_files"] = merged_files
+
+                if not data.get("image_name"):
+                    data["image_name"] = cached_data.get("album", {}).get("image", f"{d.name}.png")
+
             scanned_albums.append(data)
             scanned_names.add(d.name.lower())
 
-    metadata_albums_dir = BASE_PATH / "metadata" / "albums"
-    if metadata_albums_dir.exists():
-        for partition_dir in metadata_albums_dir.iterdir():
-            if partition_dir.is_dir():
-                for json_file in partition_dir.glob("*.json"):
-                    album_stem = json_file.stem
-                    if album_stem.lower() not in scanned_names:
-                        try:
-                            with open(json_file, "r", encoding="utf-8") as f:
-                                cached_data = json.load(f)
-                            alb = cached_data.get("album", {})
-                            songs_list = cached_data.get("songs", [])
-                            alb_name = alb.get("name", album_stem)
-                            dummy_dir = BASE_PATH / alb_name
-                            dummy_mp3s = [
-                                DummyMp3Path(s.get("audio") or f"{s.get('title')}.mp3", dummy_dir)
-                                for s in songs_list
-                            ]
-                            scanned_albums.append({
-                                "dir_path": dummy_dir,
-                                "album_name": alb_name,
-                                "album_info": {
-                                    "musicDirector": alb.get("musicDirector", "Unknown"),
-                                    "year": alb.get("year", 2026),
-                                    "genre": alb.get("genre", "Tollywood Soundtrack"),
-                                    "language": alb.get("language", "Telugu")
-                                },
-                                "image_name": alb.get("image", f"{alb_name}.png"),
-                                "mp3_files": dummy_mp3s
-                            })
-                            scanned_names.add(alb_name.lower())
-                        except Exception:
-                            pass
+    # Add remaining albums strictly from metadata cache
+    for album_stem_low, (json_file, cached_data) in cached_albums_map.items():
+        if album_stem_low not in scanned_names:
+            try:
+                alb = cached_data.get("album", {})
+                songs_list = cached_data.get("songs", [])
+                alb_name = alb.get("name", json_file.stem)
+                dummy_dir = BASE_PATH / alb_name
+                dummy_mp3s = [
+                    DummyMp3Path(s.get("audio") or f"{s.get('title')}.mp3", dummy_dir)
+                    for s in songs_list
+                ]
+                scanned_albums.append({
+                    "dir_path": dummy_dir,
+                    "album_name": alb_name,
+                    "album_info": {
+                        "musicDirector": alb.get("musicDirector", "Unknown"),
+                        "year": alb.get("year", 2026),
+                        "genre": alb.get("genre", "Tollywood Soundtrack"),
+                        "language": alb.get("language", "Telugu")
+                    },
+                    "image_name": alb.get("image", f"{alb_name}.png"),
+                    "mp3_files": dummy_mp3s
+                })
+                scanned_names.add(album_stem_low)
+            except Exception:
+                pass
 
     return scanned_albums
 '''

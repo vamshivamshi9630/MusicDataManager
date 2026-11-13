@@ -1,4 +1,5 @@
 import os
+import re
 import inspect
 import logging
 import urllib.parse
@@ -222,6 +223,23 @@ def reconcile_active_notifications(
         if not album_name or not notif_id:
             continue
 
+        # Auto-resolve zero-song orphan notifications (e.g. from dead redirects or empty pages)
+        if not songs or len(songs) == 0:
+            _safe_update_resolution(
+                db,
+                notification_id=notif_id,
+                status=NotificationResolutionStatus.COMPLETED.value,
+                updated_songs=[],
+                missing_count=0,
+                language=norm_lang,
+                canonical_album_key=canon_key,
+                is_read=True,
+            )
+            if hasattr(db, "mark_notification_read"):
+                db.mark_notification_read(notif_id)
+            resolved_count += 1
+            continue
+
         # Heal legacy language typo (e.g. Taelugu -> Telugu) even before catalog check
         if raw_language and raw_language != norm_lang:
             _safe_update_resolution(
@@ -240,6 +258,15 @@ def reconcile_active_notifications(
                 catalog_match = catalog_album_cache[cache_lookup_key]
             else:
                 catalog_match = comparator.find_matching_catalog_album(clean_display, norm_lang, year_val)
+                if not catalog_match:
+                    # Disambiguate single-song posts whose source URL identifies parent movie album
+                    src_u = (notif.get("source_url") or "").lower()
+                    m_slug = re.search(r'[a-z0-9\-]+-song-([a-z0-9\-]+)\.html', src_u)
+                    if m_slug:
+                        parent_candidate = m_slug.group(1).replace("-", " ").strip()
+                        parent_match = comparator.find_matching_catalog_album(parent_candidate, norm_lang, year_val)
+                        if parent_match:
+                            catalog_match = parent_match
                 catalog_album_cache[cache_lookup_key] = catalog_match
 
             if not catalog_match:

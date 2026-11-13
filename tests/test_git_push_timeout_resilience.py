@@ -1,14 +1,22 @@
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from backend.services.git_sync import BaseGitSyncService, GitSyncError
+from backend.core.repository import IRepositoryProvider
 from backend.core.config import settings
 
 class TestGitPushTimeoutResilience(unittest.TestCase):
 
     def setUp(self):
-        self.mock_repo = MagicMock()
-        self.mock_repo.root = "/mock/repo/root"
+        import tempfile
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.mock_repo = MagicMock(spec=IRepositoryProvider)
+        self.mock_repo.root = Path(self.temp_dir.name)
+        self.mock_repo.validate_safe_filename.side_effect = lambda x: x
         self.svc = BaseGitSyncService(self.mock_repo)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
 
     @patch.object(BaseGitSyncService, "_run_git")
     def test_01_push_succeeds_normally(self, mock_run_git):
@@ -16,7 +24,7 @@ class TestGitPushTimeoutResilience(unittest.TestCase):
             cmd = " ".join(args)
             if cmd == "rev-parse --is-inside-work-tree":
                 return "true"
-            elif cmd == "add .":
+            elif args and args[0] == "add":
                 return ""
             elif cmd == "status --porcelain":
                 return "M  metadata/statistics.json"
@@ -44,7 +52,7 @@ class TestGitPushTimeoutResilience(unittest.TestCase):
             cmd = " ".join(args)
             if cmd == "rev-parse --is-inside-work-tree":
                 return "true"
-            elif cmd == "add .":
+            elif args and args[0] == "add":
                 return ""
             elif cmd == "status --porcelain":
                 return "M  metadata/statistics.json"
@@ -74,7 +82,7 @@ class TestGitPushTimeoutResilience(unittest.TestCase):
             cmd = " ".join(args)
             if cmd == "rev-parse --is-inside-work-tree":
                 return "true"
-            elif cmd == "add .":
+            elif args and args[0] == "add":
                 return ""
             elif cmd == "status --porcelain":
                 return "M  metadata/statistics.json"

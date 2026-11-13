@@ -36,7 +36,13 @@ from backend.services.latest_releases.models import (
     TrackingStatus,
 )
 from backend.services.metadata import MetadataService
-from backend.services.validation import FileValidationError, MAX_FILE_SIZE_BYTES, ValidationService
+from backend.services.validation import (
+    FileValidationError,
+    MAX_FILE_SIZE_BYTES,
+    MAX_AUDIO_FILE_SIZE_BYTES,
+    MAX_IMAGE_FILE_SIZE_BYTES,
+    ValidationService,
+)
 
 logger = logging.getLogger("musicdata.latest_releases.uploader")
 
@@ -491,12 +497,39 @@ def build_add_to_musicdata_preview(
     albums_preview: List[Dict[str, Any]] = []
     total_songs_to_download = 0
     total_already_existing = 0
+    total_uncertain_tracks = 0
+    total_unavailable_tracks = 0
+    estimated_bytes = 0
 
     for notif in notifications:
         plan = _resolve_album_destination_plan(notif, catalog_albums, songs_fetcher)
         albums_preview.append(plan)
         total_songs_to_download += plan["downloadable_count"]
         total_already_existing += plan["already_existing_count"]
+
+        if plan.get("artwork_will_download"):
+            estimated_bytes += 1_500_000  # ~1.5 MB for converted PNG artwork
+
+        for s in plan.get("songs", []):
+            if s.get("already_in_catalog"):
+                continue
+            if s.get("match_classification") in ("POSSIBLE_VERSION_MATCH", "UNCERTAIN"):
+                total_uncertain_tracks += 1
+            if not s.get("candidate_urls"):
+                total_unavailable_tracks += 1
+            if s.get("selectable"):
+                c_urls = s.get("candidate_urls", [])
+                bitrates = [str(c.get("bitrate", "")).lower() for c in c_urls]
+                if any("320" in b for b in bitrates):
+                    estimated_bytes += 9_500_000
+                elif any("256" in b for b in bitrates):
+                    estimated_bytes += 7_500_000
+                elif any("128" in b for b in bitrates):
+                    estimated_bytes += 4_000_000
+                else:
+                    estimated_bytes += 6_000_000
+
+    estimated_upload_size_mb = round(estimated_bytes / (1024 * 1024), 1)
 
     return {
         "success": True,
@@ -508,6 +541,9 @@ def build_add_to_musicdata_preview(
             "eligible_albums": sum(1 for a in albums_preview if a["identity_verified"] and a["selectable_count"] > 0),
             "total_songs_to_download": total_songs_to_download,
             "total_already_existing": total_already_existing,
+            "total_uncertain_tracks": total_uncertain_tracks,
+            "total_unavailable_tracks": total_unavailable_tracks,
+            "estimated_upload_size_mb": estimated_upload_size_mb,
             "blocked_albums": sum(1 for a in albums_preview if not a["identity_verified"]),
         },
     }
@@ -555,8 +591,8 @@ def download_and_validate_mp3(
                 expected_len = int(content_len_hdr) if content_len_hdr and content_len_hdr.isdigit() else None
                 if expected_len == 0:
                     raise FileValidationError(f"Zero-Byte Shield Triggered: remote file reported 0 bytes ({bitrate}).")
-                if expected_len is not None and expected_len > MAX_FILE_SIZE_BYTES:
-                    raise FileValidationError(f"Remote file exceeds 50 MB limit ({expected_len} bytes).")
+                if expected_len is not None and expected_len > MAX_AUDIO_FILE_SIZE_BYTES:
+                    raise FileValidationError(f"Remote file exceeds 95 MB limit ({expected_len} bytes).")
 
                 bytes_written = 0
                 first_chunk_checked = False
@@ -571,8 +607,8 @@ def download_and_validate_mp3(
                             if lead.startswith(b"<!doctype html") or lead.startswith(b"<html"):
                                 raise UploadPipelineError(f"Source returned HTML error document instead of MP3 audio ({bitrate}).")
                         bytes_written += len(chunk)
-                        if bytes_written > MAX_FILE_SIZE_BYTES:
-                            raise FileValidationError(f"Downloaded stream exceeds 50 MB safety limit for '{song_title}'.")
+                        if bytes_written > MAX_AUDIO_FILE_SIZE_BYTES:
+                            raise FileValidationError(f"Downloaded stream exceeds 95 MB safety limit for '{song_title}'.")
                         out_f.write(chunk)
 
                 if expected_len is not None and bytes_written < expected_len:
@@ -613,12 +649,12 @@ def download_and_validate_artwork(artwork_url: str, dest_png_path: Path, album_n
             final_url = resp.geturl() or artwork_url
             if not is_public_safe_url(final_url):
                 raise UploadPipelineError("Artwork redirect target rejected as unsafe.")
-            raw = resp.read(MAX_FILE_SIZE_BYTES + 1)
+            raw = resp.read(MAX_IMAGE_FILE_SIZE_BYTES + 1)
     except Exception as e:
         raise UploadPipelineError(f"Artwork download failed: {sanitize_sensitive_text(e)}")
 
-    if len(raw) > MAX_FILE_SIZE_BYTES:
-        raise FileValidationError(f"Artwork for '{album_name}' exceeds 50 MB size limit.")
+    if len(raw) > MAX_IMAGE_FILE_SIZE_BYTES:
+        raise FileValidationError(f"Artwork for '{album_name}' exceeds 15 MB size limit.")
 
     png_bytes = ValidationService.process_and_convert_to_png(raw, f"{album_name}.png")
     dest_png_path.write_bytes(png_bytes)
@@ -1270,15 +1306,19 @@ class MusicDataSyncOrchestrator:
         songs_skipped = sum(1 for a in albums for s in a["songs"] if s["status"] == STATUS_SKIPPED)
         songs_failed = sum(1 for a in albums for s in a["songs"] if s["status"] == STATUS_FAILED)
         completed_albums = sum(1 for a in albums if a["status"] in TERMINAL_STATUSES)
+        total_songs = sum(len(a["songs"]) for a in albums)
+        done_songs = songs_added + songs_skipped + songs_failed
+        percent = int((done_songs / total_songs) * 100) if total_songs > 0 else 0
         progress = {
             "status": overall_status,
             "current_step": current_step,
             "total_albums": len(albums),
             "completed_albums": completed_albums,
-            "total_songs": sum(len(a["songs"]) for a in albums),
+            "total_songs": total_songs,
             "songs_added": songs_added,
             "songs_skipped": songs_skipped,
             "songs_failed": songs_failed,
+            "percent": percent,
             "albums": albums,
         }
         self.db.update_sync_job(job_id=job_id, status=overall_status, progress_data=progress)
@@ -1368,11 +1408,16 @@ class MusicDataSyncOrchestrator:
                     failed_cnt = sum(1 for s in alb["songs"] if s["status"] == STATUS_FAILED)
                     if failed_cnt > 0:
                         alb["status"] = STATUS_FAILED
-                        alb["error"] = "No valid songs could be downloaded/validated for this album."
+                        alb["error"] = alb.get("error") or "No valid songs could be downloaded/validated for this album."
                     elif skipped_cnt > 0:
                         alb["status"] = STATUS_SKIPPED
                     else:
                         alb["status"] = STATUS_FAILED
+                        alb["error"] = alb.get("error") or "No valid songs available."
+                    for s in alb["songs"]:
+                        if s["status"] not in TERMINAL_STATUSES:
+                            s["status"] = STATUS_FAILED
+                            s["error"] = alb.get("error") or "Download/validation not completed."
                     self._refresh_progress(job_id, albums, STATUS_DOWNLOADING, f"Finished preparing '{dest_folder}'")
                     continue
 
@@ -1557,8 +1602,7 @@ class MusicDataSyncOrchestrator:
                         except Exception:
                             pass
 
-                        for st_item in entry["staged_songs"]:
-                            s = st_item["song"]
+                        for s in alb["songs"]:
                             if s["status"] not in (STATUS_ADDED, STATUS_SKIPPED):
                                 s["status"] = STATUS_FAILED
                                 s["error"] = err_clean
@@ -1573,6 +1617,16 @@ class MusicDataSyncOrchestrator:
             # =================================================================
             # PHASE 3: Final Summary & Cleanup
             # =================================================================
+            # Ensure every single album and song is transitioned to a terminal status
+            for a in albums:
+                for s in a["songs"]:
+                    if s["status"] not in TERMINAL_STATUSES:
+                        s["status"] = STATUS_FAILED
+                        s["error"] = s.get("error") or "Sync aborted before song could be processed."
+                if a["status"] not in TERMINAL_STATUSES:
+                    a["status"] = STATUS_FAILED
+                    a["error"] = a.get("error") or "Sync aborted before album could be committed."
+
             songs_added = sum(1 for a in albums for s in a["songs"] if s["status"] == STATUS_ADDED)
             songs_skipped = sum(1 for a in albums for s in a["songs"] if s["status"] == STATUS_SKIPPED)
             songs_failed = sum(1 for a in albums for s in a["songs"] if s["status"] == STATUS_FAILED)
@@ -1606,6 +1660,7 @@ class MusicDataSyncOrchestrator:
                 "songs_added": songs_added,
                 "songs_skipped": songs_skipped,
                 "songs_failed": songs_failed,
+                "percent": 100,
                 "albums": albums,
             }
             final_result = {

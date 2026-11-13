@@ -368,6 +368,10 @@ class LatestReleasesDiscoveryEngine:
                         song_id = self.db.upsert_discovered_song(album_id, song)
                         song.id = song_id
 
+                    # Suppress active notification for albums with 0 songs or dead redirects
+                    if notif_type == NotificationType.NEW_ALBUM and (not analyzed.songs or len(analyzed.songs) == 0):
+                        notif_type = None
+
                     # Create Notification if applicable
                     if notif_type:
                         missing_songs = [s for s in analyzed.songs if not s.exists_in_catalog]

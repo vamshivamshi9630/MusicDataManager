@@ -21,6 +21,13 @@ from backend.services.latest_releases.models import (
 from backend.services.latest_releases.musicdata_uploader import (
     compute_song_key,
     selective_reconcile_notification,
+    build_add_to_musicdata_preview,
+)
+from backend.services.validation import (
+    FileValidationError,
+    ValidationService,
+    MAX_AUDIO_FILE_SIZE_BYTES,
+    MAX_IMAGE_FILE_SIZE_BYTES,
 )
 from backend.services.latest_releases.reconciliation import reconcile_active_notifications
 from backend.services.latest_releases.song_comparator import SongComparator
@@ -508,3 +515,230 @@ def test_refresh_catalog_clears_stale_cache():
         idx = svc.get_albums_index()
         assert len(idx) == 2
         m_fetch.assert_called_once_with("metadata/indexes/albums.json")
+
+
+def test_audio_file_size_limits_and_vinayaka_stotram(tmp_path):
+    """
+    70.9 MB Vinayaka Stotram is accepted under 95 MB limit (< 100 MB GitHub hard limit).
+    Oversized files (> 95 MB) and oversized artwork (> 15 MB) fail safely.
+    """
+    assert MAX_AUDIO_FILE_SIZE_BYTES == 95 * 1024 * 1024
+    assert MAX_IMAGE_FILE_SIZE_BYTES == 15 * 1024 * 1024
+
+    # 1. 70.9 MB file size validation check
+    stotram_file = tmp_path / "stotram.mp3"
+    stotram_file.write_bytes(b"\x00" * 100)  # small stub
+
+    # Mock MP3 to report valid length and test file size threshold
+    with patch("backend.services.validation.MP3") as mock_mp3:
+        mock_mp3.return_value.info.length = 300
+        mock_mp3.return_value.info.bitrate = 320000
+        mock_mp3.return_value.info.sample_rate = 44100
+        mock_mp3.return_value.info.channels = 2
+
+        with patch.object(Path, "stat") as mock_stat:
+            # 70,927,827 bytes (~67.6 MB)
+            mock_stat.return_value.st_size = 70927827
+            res = ValidationService.validate_mp3_file(stotram_file)
+            assert res["valid"] is True
+            assert res["fileSize"] == 70927827
+
+            # 96 MB audio exceeds 95 MB limit -> raises FileValidationError
+            mock_stat.return_value.st_size = 96 * 1024 * 1024
+            with pytest.raises(FileValidationError, match="exceeds maximum allowed size of 95 MB"):
+                ValidationService.validate_mp3_file(stotram_file)
+
+    # 2. Artwork 16 MB exceeds 15 MB image limit
+    big_art = b"\x89PNG\r\n\x1a\n" + (b"\x00" * (16 * 1024 * 1024))
+    with pytest.raises(FileValidationError, match="exceeds maximum allowed size of 15 MB"):
+        ValidationService.process_and_convert_to_png(big_art, "cover.png")
+
+
+def test_zero_track_album_suppression_never_creates_new_album():
+    """Empty or redirected album pages with 0 tracks must return (None, discovered), not NEW_ALBUM."""
+    comp = SongComparator(catalog_albums=[{"name": "SomeOther (Telugu)", "language": "Telugu"}])
+    empty_album = DiscoveredAlbum(
+        album_name="The Paradise",
+        normalized_name="theparadise",
+        source_url="https://naasongs.com.co/the-paradise-songs-c.html",
+        language="Telugu",
+        year=2026,
+        songs=[],
+    )
+    notif_type, analyzed = comp.compare_album(empty_album)
+    assert notif_type is None
+    assert analyzed.exists_in_catalog is False
+
+
+def test_single_song_post_attribution_to_parent_movie():
+    """Single-song posts attribute album to parent movie and clean music director field."""
+    html_sample = (
+        "<html><body><h1>Nuvvante Istham Song</h1>"
+        "<div class='entry-content'>"
+        "<p>Song Name:-Nuvvante Istham Album Name:-Devadasu Music:-Chakri Lyrics:-Chandra Bose Artist:-Chakri Language:-Telugu Year:-2006</p>"
+        "<p>01. Nuvvante Istham Song – Chakri <a href='https://naasongs.com.co/devadasu-2006-songs-a.html'>Download</a></p>"
+        "</div></body></html>"
+    )
+    album = AlbumParser.parse_album_page(html_sample, "https://naasongs.com.co/nuvvante-istham-song-devadasu.html")
+    assert album is not None
+    # Album must be attributed to Devadasu, not the single song title
+    assert album.album_name == "Devadasu"
+    # Music director must be cleaned to Chakri (not bleeding into Lyrics or Artist)
+    assert album.music_director == "Chakri"
+    assert album.year == 2006
+    # Track link pointing to .html must not be treated as audio download
+    assert len(album.songs) == 1
+    assert album.songs[0].song_title == "Nuvvante Istham Song"
+    assert album.songs[0].source_audio_url is None
+    assert album.songs[0].link_available is False
+
+
+def test_music_director_singer_label_corruption_rejected():
+    """Music director field capturing 'Singer:-...' is rejected and defaults cleanly to 'Unknown'."""
+    html_sample = (
+        "<html><body><h1>O Na Ramayya Song</h1>"
+        "<div class='entry-content'>"
+        "<p>Movie Name:-O Na Ramayya Music:- Singer:-Nalgonda Gaddra Narsanna Language:-Telugu Year:-2026</p>"
+        "<p>01. O Na Ramayya Song – Nalgonda Gaddra Narsanna</p>"
+        "</div></body></html>"
+    )
+    album = AlbumParser.parse_album_page(html_sample, "https://naasongs.com.co/o-na-ramayya-song.html")
+    assert album is not None
+    assert album.music_director == "Unknown"
+
+
+def test_reconciliation_auto_resolves_zero_song_orphan_notifications(tmp_path):
+    """Zero-song orphan notifications are automatically resolved to COMPLETED and marked read."""
+    db = _make_db(tmp_path)
+    alb_id = _insert_dummy_album(db, "The Paradise", "https://naasongs.com.co/the-paradise.html")
+    db.create_or_update_notification(
+        album_id=alb_id,
+        notification_type=NotificationType.NEW_ALBUM,
+        title="New Album: The Paradise",
+        message="[Telugu] 0 songs available",
+        album_name="The Paradise",
+        artwork_url=None,
+        music_director="Unknown",
+        year=2026,
+        source_url="https://naasongs.com.co/the-paradise.html",
+        songs_list=[],
+        missing_count=0,
+        language="Telugu",
+    )
+    assert len(db.get_active_notifications()) == 1
+
+    comp = SongComparator(catalog_albums=[])
+    res = reconcile_active_notifications(db=db, comparator=comp)
+    assert res["resolved_notifications"] == 1
+    assert len(db.get_active_notifications()) == 0
+
+    notif = db.get_notification_by_id(alb_id)
+    assert notif["resolution_status"] == "COMPLETED"
+    assert bool(notif["is_read"]) is True
+
+
+def test_reconciliation_resolves_single_song_posts_matching_parent_movie(tmp_path):
+    """Single-song post with source URL pointing to parent movie resolves when movie tracks exist."""
+    db = _make_db(tmp_path)
+    alb_id = _insert_dummy_album(db, "Nuvvante Istham Song", "https://naasongs.com.co/nuvvante-istham-song-devadasu.html")
+    db.create_or_update_notification(
+        album_id=alb_id,
+        notification_type=NotificationType.NEW_SONG,
+        title="New Song: Nuvvante Istham Song",
+        message="[Telugu] 'Nuvvante Istham Song' released",
+        album_name="Nuvvante Istham Song",
+        artwork_url=None,
+        music_director="Chakri",
+        year=2006,
+        source_url="https://naasongs.com.co/nuvvante-istham-song-devadasu.html",
+        songs_list=[{
+            "song_title": "Nuvvante Istham Song",
+            "exists_in_catalog": False,
+            "source_audio_url": None,
+        }],
+        missing_count=1,
+        language="Telugu",
+    )
+
+    catalog_albums = [{"name": "Devadasu (Telugu)", "language": "Telugu", "year": 2006}]
+    comp = SongComparator(catalog_albums=catalog_albums)
+
+    with patch.object(comp, "fetch_catalog_album_songs", return_value=[{"title": "Nuvvante Istham", "filename": "Nuvvante Istham.mp3"}]):
+        res = reconcile_active_notifications(db=db, comparator=comp)
+        assert res["resolved_notifications"] == 1
+        assert len(db.get_active_notifications()) == 0
+
+        notif = db.get_notification_by_id(alb_id)
+        assert notif["resolution_status"] == "COMPLETED"
+        assert bool(notif["is_read"]) is True
+
+
+def test_preview_summary_includes_uncertain_unavailable_and_size_metrics(tmp_path):
+    """Review modal preview returns accurate summary metrics for uncertain, unavailable, and estimated size."""
+    db = _make_db(tmp_path)
+    alb_id = _insert_dummy_album(db, "TestRelease", "https://naasongs.com.co/test.html")
+    db.create_or_update_notification(
+        album_id=alb_id,
+        notification_type=NotificationType.NEW_ALBUM,
+        title="New Album: TestRelease",
+        message="[Telugu] 3 songs",
+        album_name="TestRelease",
+        artwork_url="https://naasongs.com.co/art.jpg",
+        music_director="Director",
+        year=2026,
+        source_url="https://naasongs.com.co/test.html",
+        songs_list=[
+            {
+                "song_title": "Downloadable Track",
+                "track_number": 1,
+                "exists_in_catalog": False,
+                "source_audio_url": "https://mp3teluguwap.net/song1.mp3",
+                "download_links": {"320 Kbps": "https://mp3teluguwap.net/song1.mp3"},
+                "available_bitrates": ["320 Kbps"],
+                "match_classification": "MISSING",
+            },
+            {
+                "song_title": "Uncertain Track",
+                "track_number": 2,
+                "exists_in_catalog": False,
+                "source_audio_url": "https://mp3teluguwap.net/song2.mp3",
+                "download_links": {"128 Kbps": "https://mp3teluguwap.net/song2.mp3"},
+                "available_bitrates": ["128 Kbps"],
+                "match_classification": "POSSIBLE_VERSION_MATCH",
+            },
+            {
+                "song_title": "No URL Track",
+                "track_number": 3,
+                "exists_in_catalog": False,
+                "source_audio_url": None,
+                "download_links": {},
+                "match_classification": "MISSING",
+            },
+        ],
+        missing_count=3,
+        language="Telugu",
+    )
+
+    notifs = db.get_active_notifications()
+    nid = notifs[0]["id"]
+
+    with patch("backend.services.latest_releases.musicdata_uploader._load_authoritative_catalog_state") as mock_cat:
+        mock_cat.return_value = ([], lambda a: [])
+        preview = build_add_to_musicdata_preview([nid], db=db)
+        summary = preview["summary"]
+        assert summary["total_albums"] == 1
+        assert summary["total_songs_to_download"] == 1  # only default_selected (Downloadable Track)
+        assert summary["total_uncertain_tracks"] == 1
+        assert summary["total_unavailable_tracks"] == 1
+        assert summary["estimated_upload_size_mb"] > 0
+
+        songs = preview["albums"][0]["songs"]
+        # Downloadable Track is selectable & default_selected
+        assert songs[0]["selectable"] is True
+        assert songs[0]["default_selected"] is True
+        # Uncertain Track is selectable, but default_selected is False (requires explicit review)
+        assert songs[1]["selectable"] is True
+        assert songs[1]["default_selected"] is False
+        # No URL Track is NOT selectable
+        assert songs[2]["selectable"] is False
+        assert songs[2]["default_selected"] is False

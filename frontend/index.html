@@ -1552,9 +1552,9 @@
                                 </button>
                             `;
                         } else if (s.source_page_url || n.source_url) {
-                            dlButtonHtml = `<a href="${escapeHtml(s.source_page_url || n.source_url)}" target="_blank" rel="noopener" class="text-[10px] text-slate-400 hover:text-slate-200 underline">Source ↗</a>`;
+                            dlButtonHtml = `<span class="text-[10px] text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/80 font-medium" title="Audio download stream unavailable on source">Download unavailable</span>`;
                         } else {
-                            dlButtonHtml = `<span class="text-[10px] text-slate-500">Upcoming</span>`;
+                            dlButtonHtml = `<span class="text-[10px] text-slate-500 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/80 font-medium">Download unavailable</span>`;
                         }
 
                         const metaParts = [];
@@ -1624,10 +1624,22 @@
                             <span>⬇ Download All (${missingCount})</span>
                         </button>
                     `;
+                } else if (missingGroup.length === 0 && verifyGroup.length === 0) {
+                    batchDlBtnHtml = `
+                        <span class="text-xs text-emerald-400 flex items-center gap-1 font-medium">
+                            <i class="icon-check text-emerald-400"></i> All songs in MusicData
+                        </span>
+                    `;
+                } else if (missingGroup.length > 0 && verifyGroup.length === 0) {
+                    batchDlBtnHtml = `
+                        <span class="text-xs text-amber-400/90 flex items-center gap-1 font-medium" title="Missing songs do not have downloadable audio URLs on source">
+                            <i class="icon-alert-triangle text-amber-400"></i> Download unavailable on source
+                        </span>
+                    `;
                 } else {
                     batchDlBtnHtml = `
-                        <span class="text-xs text-slate-500 flex items-center gap-1">
-                            <i class="icon-check text-emerald-400"></i> All songs in MusicData
+                        <span class="text-xs text-amber-300 flex items-center gap-1 font-medium" title="Tracks require version verification before downloading">
+                            <i class="icon-help-circle text-amber-300"></i> Version verification needed
                         </span>
                     `;
                 }
@@ -2089,9 +2101,20 @@
             const s = mdPreviewState.summary || {};
 
             summaryEl.innerHTML = `
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                    <span>Target: <b class="text-brand-400">${escapeHtml(mdPreviewState.target_repository || 'vamshivamshi9630/MusicData')}</b> (${escapeHtml(mdPreviewState.target_branch || 'main')})</span>
-                    <span><b>${s.total_albums || 0}</b> albums • <b class="text-cyan-400">${s.total_songs_to_download || 0}</b> ready to add • <b class="text-emerald-400">${s.total_already_existing || 0}</b> already in repo</span>
+                <div class="space-y-1.5 text-xs">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <span>Target: <b class="text-brand-400">${escapeHtml(mdPreviewState.target_repository || 'vamshivamshi9630/MusicData')}</b> (${escapeHtml(mdPreviewState.target_branch || 'main')})</span>
+                        <span class="text-slate-300">Est. Upload Size: <b class="text-brand-300">~${s.estimated_upload_size_mb || 0} MB</b></span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 pt-1 border-t border-slate-800 text-[11px]">
+                        <span><b>${s.total_albums || 0}</b> albums</span>
+                        <span class="text-slate-600">•</span>
+                        <span class="text-cyan-400"><b>${s.total_songs_to_download || 0}</b> ready to download</span>
+                        <span class="text-slate-600">•</span>
+                        <span class="text-emerald-400"><b>${s.total_already_existing || 0}</b> in repo (skipped)</span>
+                        ${s.total_uncertain_tracks ? `<span class="text-slate-600">•</span><span class="text-amber-300"><b>${s.total_uncertain_tracks}</b> version review</span>` : ''}
+                        ${s.total_unavailable_tracks ? `<span class="text-slate-600">•</span><span class="text-slate-400"><b>${s.total_unavailable_tracks}</b> source unavailable</span>` : ''}
+                    </div>
                 </div>
             `;
 
@@ -2122,7 +2145,7 @@
                                     <input type="checkbox" disabled class="w-3.5 h-3.5 rounded opacity-40">
                                     <span class="text-slate-400 truncate">${String(song.track_number).padStart(2, '0')}. ${escapeHtml(song.song_title)}</span>
                                 </div>
-                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 shrink-0">✓ Exists (Skipped)</span>
+                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 shrink-0 font-medium">✓ Already in MusicData (Skipped)</span>
                             </div>
                         `;
                     }

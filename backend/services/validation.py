@@ -6,7 +6,10 @@ from mutagen.mp3 import MP3
 from PIL import Image
 
 PNG_MAGIC_BYTES = b"\x89PNG\r\n\x1a\n"
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+# GitHub rejects files >= 100 MB. 95 MB provides safe margin while allowing large audio tracks (e.g. 70.9 MB Stotrams)
+MAX_AUDIO_FILE_SIZE_BYTES = 95 * 1024 * 1024  # 95 MB
+MAX_IMAGE_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
+MAX_FILE_SIZE_BYTES = MAX_AUDIO_FILE_SIZE_BYTES  # Retained for backward compatibility
 
 class FileValidationError(Exception):
     pass
@@ -22,8 +25,8 @@ class ValidationService:
         if not content or len(content) == 0:
             raise FileValidationError(f"File '{filename}' is empty (0 bytes).")
 
-        if len(content) > MAX_FILE_SIZE_BYTES:
-            raise FileValidationError(f"File '{filename}' exceeds maximum allowed size of 50 MB.")
+        if len(content) > MAX_IMAGE_FILE_SIZE_BYTES:
+            raise FileValidationError(f"File '{filename}' exceeds maximum allowed size of 15 MB.")
 
         try:
             # Verify image content integrity with Pillow
@@ -76,8 +79,8 @@ class ValidationService:
         if file_size == 0:
             raise FileValidationError(f"Zero-Byte Shield Triggered: '{file_path.name}' has file size 0 bytes.")
 
-        if file_size > MAX_FILE_SIZE_BYTES:
-            raise FileValidationError(f"Audio file '{file_path.name}' exceeds maximum allowed size of 50 MB.")
+        if file_size > MAX_AUDIO_FILE_SIZE_BYTES:
+            raise FileValidationError(f"Audio file '{file_path.name}' exceeds maximum allowed size of 95 MB.")
 
         if not file_path.suffix.lower() == ".mp3":
             raise FileValidationError(f"Invalid extension for '{file_path.name}'. Only .mp3 files are supported.")

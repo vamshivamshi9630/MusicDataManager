@@ -139,6 +139,11 @@ class SongComparator:
             discovered.catalog_album_name = None
             discovered.tracking_status = TrackingStatus.DISCOVERED
 
+            # Zero-track albums or dead redirects must NEVER generate an active NEW_ALBUM notification
+            valid_tracks = [s for s in discovered.songs if s.song_title and s.song_title.strip()]
+            if not valid_tracks or len(discovered.songs) == 0:
+                return None, discovered
+
             for song in discovered.songs:
                 song.exists_in_catalog = False
                 song.catalog_song_title = None
